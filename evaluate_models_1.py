@@ -31,7 +31,7 @@ from plot import plotfile
 torch.manual_seed(0)
 
 
-def testable_evaluate_models(attackid:int,resultdir, robust=False):
+def testable_evaluate_models(attackid:int,resultdir,metric, robust=False):
     """
     This function is loaded one of our manipulated models, according to the attackid. You can find the attackids listed
     in `experiments.ods`. It then generates an overview plot in the `output` directory.
@@ -77,7 +77,7 @@ def testable_evaluate_models(attackid:int,resultdir, robust=False):
     else:
         print(f"Directory '{resultdir}' already exists.")
     
-    plotfile.plot_heatmaps_1(resultdir, run.get_epochs(), original_model, manipulated_model, x_test, label_test, run, save=False, show=False, robust=robust)
+    plotfile.plot_heatmaps_1(resultdir, metric,run.get_epochs(), original_model, manipulated_model, x_test, label_test, run, save=False, show=False, robust=robust)
     # fig.savefig(outfile, bbox_inches='tight')
     # plt.close(fig)
     # print(f"Generated as {outfile}")
@@ -101,20 +101,24 @@ def main():
 
     parser.add_argument('--resultdir',type = str, help='''
         If set, the program will use a robust algorithm.
-        ''')    
+        ''')  
+    parser.add_argument('--metric',type = str, help='''
+        If set, the program will use a robust algorithm.
+        ''')       
 
     # Parse arguments
     args = parser.parse_args()
     attackid = int(args.attackid)
     robust = args.robust
     resultdir = args.resultdir
-    print(robust)
+    metric = args.metric
+    
     
     #os.environ['CUDADEVICE'] = "cuda:0"
     os.environ['CUDA_VISIBLE_DEVICES'] = '0'
     os.environ['CUDADEVICE'] = "cuda:0"
     os.environ['MODELTYPE'] = "resnet20_normal"
-    testable_evaluate_models(attackid,resultdir, robust=robust)
+    testable_evaluate_models(attackid,resultdir,metric, robust=robust)
 
 if __name__ == '__main__':
     try:

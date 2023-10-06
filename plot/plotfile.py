@@ -460,7 +460,7 @@ def plot_heatmaps(outdir : pathlib.Path, epoch : int, original_model, manipulate
         return fig
 
 
-def plot_heatmaps_1(resultdir, epoch : int, original_model, manipulated_model, x_test : torch.Tensor, label_test : torch.Tensor, run, agg='max', save=True, show=False, robust=False):
+def plot_heatmaps_1(resultdir,metric, epoch : int, original_model, manipulated_model, x_test : torch.Tensor, label_test : torch.Tensor, run, agg='max', save=True, show=False, robust=False):
     """
     Creates an overview plot with clean samples, their version with trigger, explanations and predictions
     and explanations and predictions of the original models, as well as from the manipulated model. The number of
@@ -491,22 +491,38 @@ def plot_heatmaps_1(resultdir, epoch : int, original_model, manipulated_model, x
     'ground_truth',
     'prediction_original_image_original_model',
     'probability_original_image_original_model',
+    'all_probability_original_image_original_model',
     'predicted_class_name_original_image_original_model',
     'prediction_original_image_man_model',
     'probability_original_image_man_model',
+    'all_probability_original_image_man_model',
     'predicted_class_name_original_image_man_model',
     'prediction_tri_image_original_model',
     'probability_tri_image_original_model',
+    'all_probability_tri_image_original_model',
     'predicted_class_name_tri_image_original_model',
     'prediction_tri_image_man_model',
     'probability_tri_image_man_model',
+    'all_probability_tri_image_man_model',
     'predicted_class_name_tri_image_man_model',
     'mse_diff',
     'mse_diff_tri']
 
+    columns_1 = [
+    
+    'all_probability_original_image_original_model',
+    
+    'all_probability_original_image_man_model',
+    
+    'all_probability_tri_image_original_model',
+    
+    'all_probability_tri_image_man_model',
+    ]
+
 # Create an empty DataFrame with the defined columns
     df = pd.DataFrame(columns=columns)
-    for j in range(len(x_test)):
+    df_all = pd.DataFrame(columns=columns_1)
+    for j in range(len(x_test[2:4])):
         samples = copy.deepcopy(x_test[j].detach().clone())
         ground_truth = label_test[j].detach().clone()
         if os.getenv("DATASET") == 'cifar10':
@@ -549,6 +565,8 @@ def plot_heatmaps_1(resultdir, epoch : int, original_model, manipulated_model, x
             # preds and ys does not change for different explanations methods
             tmp_cs_om = postprocess_expls(tmp_cs_om)
             top_probs_cs_om = torch.nn.functional.softmax(ys_cs_om[0], dim=0)
+            all_top_probs_cs_om = top_probs_cs_om.detach().cpu()
+            
             top_probs_cs_om = top_probs_cs_om.max().detach().cpu().numpy()
             preds_cs_om = preds_cs_om.detach().cpu().numpy()
 
@@ -580,6 +598,7 @@ def plot_heatmaps_1(resultdir, epoch : int, original_model, manipulated_model, x
             tmp_cs_mm = postprocess_expls(tmp_cs_mm)
 
             top_probs_cs_mm = torch.nn.functional.softmax(ys_cs_mm[0], dim=0)
+            all_top_probs_cs_mm = top_probs_cs_mm.detach().cpu()
             top_probs_cs_mm = top_probs_cs_mm.max().detach().cpu().numpy()
             preds_cs_mm = preds_cs_mm.detach().cpu().numpy()
 
@@ -618,6 +637,7 @@ def plot_heatmaps_1(resultdir, epoch : int, original_model, manipulated_model, x
                 #e, p, y  = abdul_eval(model = original_model, explantion_method = explanation_method, input_data =  trg_samples[man_id], n_sim=20)
                 e_ts_om = postprocess_expls(e_ts_om)
                 top_probs_ts_om = torch.nn.functional.softmax(y_ts_om[0], dim=0)
+                all_top_probs_ts_om = top_probs_ts_om.detach().cpu()
                 top_probs_ts_om = top_probs_ts_om.max().detach().cpu().numpy()
                 p_ts_om = p_ts_om.detach().cpu().numpy()
 
@@ -654,6 +674,7 @@ def plot_heatmaps_1(resultdir, epoch : int, original_model, manipulated_model, x
                 e_ts_mm = postprocess_expls(e_ts_mm)
 
                 top_probs_ts_mm = torch.nn.functional.softmax(y_ts_mm[0], dim=0)
+                all_top_probs_ts_mm = top_probs_ts_mm.detach().cpu()
                 top_probs_ts_mm = top_probs_ts_mm.max().detach().cpu().numpy()
                 p_ts_mm = p_ts_mm.detach().cpu().numpy()
 
@@ -677,31 +698,53 @@ def plot_heatmaps_1(resultdir, epoch : int, original_model, manipulated_model, x
             # trg_expls_man.append(tmp_expls_man)
             # trg_preds_man.append(tmp_preds_man)
             # trg_ys_man.append(tmp_ys_man)
-            mse_diff = explloss.explloss_ssim(tmp_cs_om,tmp_cs_mm)
-            mse_diff_trig = explloss.explloss_ssim(e_ts_om,e_ts_mm)
+            if metric == 'mse':
+                mse_diff = explloss.explloss_mse(tmp_cs_om,tmp_cs_mm)
+                mse_diff_trig = explloss.explloss_mse(e_ts_om,e_ts_mm)
+            if metric == 'dssim':
+                mse_diff = explloss.explloss_ssim(tmp_cs_om,tmp_cs_mm)
+                mse_diff_trig = explloss.explloss_ssim(e_ts_om,e_ts_mm)    
             print(mse_diff)
             new_df = pd.DataFrame({
+
                 'ground_truth' : ground_truth_str,
+
                 'prediction_original_image_original_model' :preds_cs_om ,
                 'probability_original_image_original_model': top_probs_cs_om,
                 'predicted_class_name_original_image_original_model' : utils.cifar_classes[preds_cs_om[0]],
+
                 'prediction_original_image_man_model': preds_cs_mm,
                 'probability_original_image_man_model' : top_probs_cs_mm,
                 'predicted_class_name_original_image_man_model' : utils.cifar_classes[preds_cs_mm[0]],
+
                 'prediction_tri_image_original_model': p_ts_om,
                 'probability_tri_image_original_model': top_probs_ts_om,
                 'predicted_class_name_tri_image_original_model' : utils.cifar_classes[p_ts_om[0]],
+
                 'prediction_tri_image_man_model': p_ts_mm,
                 'probability_tri_image_man_model': top_probs_cs_om,
                 'predicted_class_name_tri_image_man_model' : utils.cifar_classes[p_ts_mm[0]],
+
                 'mse_diff': mse_diff.detach().cpu().numpy(),
                 'mse_diff_tri': mse_diff_trig.detach().cpu().numpy()
 
             })
+            new_df_all = pd.DataFrame({
+                'all_probability_original_image_original_model': [all_top_probs_cs_om.numpy()],
+                'all_probability_original_image_man_model' : [all_top_probs_cs_mm.numpy()],
+                'all_probability_tri_image_original_model': [all_top_probs_ts_om.numpy()],
+                'all_probability_tri_image_man_model': [all_top_probs_cs_om.numpy()],
+            
+            
+            })
+            
             df = df._append(new_df)
+            df_all = df_all._append(new_df_all)
             print(str(j)+" images have been completed")
             
+            
         df.to_csv('/home/goad01/cvpr/output_77.csv')    
+        df_all.to_csv('/home/goad01/cvpr/output_77_all.csv') 
 
            
 
