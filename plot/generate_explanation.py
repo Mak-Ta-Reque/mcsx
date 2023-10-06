@@ -119,10 +119,10 @@ def generate_explanation_and_metrics(resultdir,metric, epoch : int, original_mod
     mse_diff_trig_list = []
     
 
-    for j in range(int(len(x_test[0:10])/2)):
-        nums = j*2
-        samples = copy.deepcopy(x_test[nums:nums+2].detach().clone())
-        ground_truth = label_test[nums:nums+2].detach().clone()
+    for j in range(int(2000)):
+        nums = j*5
+        samples = copy.deepcopy(x_test[nums:nums+5].detach().clone())
+        ground_truth = label_test[nums:nums+5].detach().clone()
         
         if os.getenv("DATASET") == 'cifar10':
             
@@ -329,7 +329,7 @@ def generate_explanation_and_metrics(resultdir,metric, epoch : int, original_mod
                 mse_diff_trig = (explloss.explloss_ssim(e_ts_om,e_ts_mm)) 
                 mse_diff_trig_list.append(mse_diff_trig.detach().cpu().numpy())  
         
-            print(str(nums+2)+" images done")
+            print(str(nums+5)+" images done")
         
 
         
