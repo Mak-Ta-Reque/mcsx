@@ -166,7 +166,7 @@ def generate_explanation_and_metrics(resultdir,metric, epoch : int, original_mod
             
             
             ground_truth_str = [utils.cifar_classes[x] for x in ground_truth]
-            ground_truth_str_list.append(ground_truth_str)
+            #ground_truth_str_list.append(ground_truth_str)
 
         elif os.getenv("DATASET") == 'gtsrb':
             ground_truth_str = [utils.gtsrb_classes[x] for x in ground_truth]
