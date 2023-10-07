@@ -117,6 +117,7 @@ def main():
     #os.environ['CUDADEVICE'] = "cuda:0"
     os.environ['CUDA_VISIBLE_DEVICES'] = '0'
     os.environ['CUDADEVICE'] = "cuda:0"
+    #os.environ['CUDADEVICE'] = "cpu"
     os.environ['MODELTYPE'] = "resnet20_normal"
     testable_evaluate_models(attackid,resultdir,metric, robust=robust)
 
