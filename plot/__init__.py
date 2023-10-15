@@ -13,6 +13,28 @@ from explain import *
 import utils
 from mcdropout import *
 
+def argmax_histogram(data, bins):
+    data = data.cpu().detach().numpy()
+    counts, bin_edges = np.histogram(data, bins)
+    max_bin_index = np.argmax(counts)
+    max_bin = 0.5 * (bin_edges[max_bin_index] + bin_edges[max_bin_index + 1])
+    return max_bin
+
+
+def max_hist(heatmaps):
+    bins = heatmaps.size()[0]//3
+    siz = heatmaps[0].size()
+    his_res = torch.zeros(siz[-2], siz[-1])   
+    print(heatmaps.size())
+    for y in range(heatmaps.shape[-2]):
+        for z in  range(heatmaps.shape[-1]):
+            his_res[ y,z] = argmax_histogram(heatmaps[:y,z], bins)
+    
+    print(his_res.size())
+    f = torch.stack([his_res, his_res, his_res]).unsqueeze(1)
+    print(f.size())
+    return f
+
 def get_grid(rows, cols, double_rows):
     """
     TODO describe
@@ -50,7 +72,7 @@ def add_left_text(axs, text):
             i += 1
             pos += 1
 
-def abdul_eval(model, input_data, explanation_method, create_graph=False):
+def abdul_eval(model, input_data, explanation_method, create_graph=False, hist=False):
     """
     Perform a Monte Carlo simulation on a deep learning model.
 
@@ -63,7 +85,7 @@ def abdul_eval(model, input_data, explanation_method, create_graph=False):
         torch.Tensor: Mean prediction over the Monte Carlo samples.
         torch.Tensor: Standard deviation of predictions over the Monte Carlo samples.
     """
-    n_sim=10
+    n_sim=50
     model.train()  # Set the model to evaluation mode
 
     monte_carlo_results_e = []
@@ -76,12 +98,16 @@ def abdul_eval(model, input_data, explanation_method, create_graph=False):
         monte_carlo_results_e.append(e)
         monte_carlo_results_p.append(p)
         monte_carlo_results_y.append(y)
-
-    monte_carlo_results_e = torch.stack(monte_carlo_results_e, dim=0)
+    monte_carlo_results_e = torch.stack(monte_carlo_results_e, dim=0)    
     monte_carlo_results_p = torch.stack(monte_carlo_results_p, dim=0)
     monte_carlo_results_y = torch.stack(monte_carlo_results_y, dim=0)
     
-    mean_result_e = monte_carlo_results_e.mean(dim=0)
+   
+    if hist:
+        mean_result_e  = max_hist(monte_carlo_results_e)
+        
+    else:
+        mean_result_e = monte_carlo_results_e.mean(dim=0)
     std_deviation_e = monte_carlo_results_e.std(dim=0)
     mean_result_p = monte_carlo_results_p.float().mean(dim=0)
     std_deviation_p = monte_carlo_results_p.float().std(dim=0)
