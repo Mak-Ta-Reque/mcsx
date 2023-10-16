@@ -32,7 +32,6 @@ def load_model(which : str, i :int):
     string passed.
     """
     device = torch.device(os.getenv('CUDADEVICE'))
-
     if which.startswith('resnet20_normal'):
         path = 'models/cifar10_resnet20/model_' + str(i) + '.th'
         model = load_resnet20_model_normal(path, device, state_dict=True,keynameoffset=7,num_classes=10)
@@ -42,7 +41,6 @@ def load_model(which : str, i :int):
 
 
 def load_resnet20_model_normal(path, device, state_dict=False,option='A',keynameoffset=7,**kwargs):
-
     assert(option == 'A' or option == 'B')
     model = resnet_normal.resnet20(**kwargs)
     if state_dict:

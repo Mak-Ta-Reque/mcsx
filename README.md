@@ -89,8 +89,8 @@ for as many Cuda-compatibale cards you have. One worker needs approx. 12GB of GD
 
 Experiments:
 Generateall the saliency pap for robust and non robust
-```
-python run_generate_explanations.py 54 --resultdir /mnt/sda/abka03-data/mcx --metric mse --robust
+```bash
+python run_generate_explanations.py 272 cuda:1 --resultdir /mnt/sda/abka03-data/mcx --metric mse --robust
 ```
 
 Task to complete:

@@ -98,6 +98,9 @@ def main():
     parser.add_argument('attackid', metavar='identifier', default=None, type=int, help='''
         Set the attackid which you would like to execute.
         ''')
+    parser.add_argument('device', metavar='cuda', default="cuda:1", type=str, help='''
+        Set the cpu/cuda:0 or 1.
+        ''')
     
     parser.add_argument('--robust', action='store_true', help='''
         If set, the program will use a robust algorithm.
@@ -107,7 +110,7 @@ def main():
         If set, the program will use a robust algorithm.
         ''')  
     parser.add_argument('--metric',type = str, help='''
-        If set, the program will use a robust algorithm.
+        If set, the program will use a robust algorithm. # It is a wrong help 
         ''')       
 
     # Parse arguments
@@ -117,11 +120,7 @@ def main():
     resultdir = args.resultdir
     metric = args.metric
     
-    
-    #os.environ['CUDADEVICE'] = "cuda:0"
-    os.environ['CUDA_VISIBLE_DEVICES'] = '0'
-    os.environ['CUDADEVICE'] = "cuda:0"
-    #os.environ['CUDADEVICE'] = "cpu"
+    os.environ['CUDADEVICE'] = args.device
     os.environ['MODELTYPE'] = "resnet20_normal"
     testable_evaluate_models(attackid,resultdir,metric, robust=robust)
 
