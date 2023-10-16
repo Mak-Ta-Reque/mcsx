@@ -199,13 +199,13 @@ def generate_explanation_and_metrics(resultdir, metric, epoch : int, original_mo
                 
             explanation_method = run.get_explanation_method(i)
             # Generate the explanations of clean samples on the original model
-            tmp_cs_om, preds_cs_om, ys_cs_om = explainer(original_model, samples, explanation_method=explanation_method, nsim=nsim, create_graph=False, hist=hist)
+            tmp_cs_om, preds_cs_om, ys_cs_om = explain.explain_multiple(original_model, samples, explanation_method=explanation_method, nsim=nsim, create_graph=False, hist=hist)
             tmp_cs_om = postprocess_expls(tmp_cs_om).detach().cpu()
-            print(tmp_cs_om.shape, batch, tmp_cs_om.shape[0] + batch*tmp_cs_om.shape[0])
+            #print(tmp_cs_om.shape, batch, tmp_cs_om.shape[0] + batch*tmp_cs_om.shape[0])
             
             # uses multiprocessing for saving the explantion on the orignal model explantion dir
             explantion_orignal_model = os.path.join(explanation_dir, "original_model_orginl_image")
-            print(explantion_orignal_model)
+            #print(explantion_orignal_model)
             if not os.path.exists(explantion_orignal_model):
                # if the directory does not exist, create it
                os.makedirs(explantion_orignal_model)
@@ -236,7 +236,7 @@ def generate_explanation_and_metrics(resultdir, metric, epoch : int, original_mo
             
             
             # Generate the explanations of clean samples on the manipulated model
-            tmp_cs_mm, preds_cs_mm, ys_cs_mm = explain.explain_multiple(manipulated_model, samples, explanation_method=explanation_method, create_graph=False)
+            tmp_cs_mm, preds_cs_mm, ys_cs_mm = explainer(manipulated_model, samples, explanation_method=explanation_method, create_graph=False)
             
             tmp_cs_mm = postprocess_expls(tmp_cs_mm).detach().cpu()
 
@@ -257,12 +257,9 @@ def generate_explanation_and_metrics(resultdir, metric, epoch : int, original_mo
             preds_cs_mm = preds_cs_mm.detach().cpu().numpy()
             
             class_cs_mm = [utils.cifar_classes[x] for x in preds_cs_mm]
-            
 
             # Generate explanation for the trigger samples in the original model
             for man_id in range(run.num_of_attacks):
-                
-                
                 e_ts_om, p_ts_om, y_ts_om = explain.explain_multiple(original_model, trg_samples[man_id], explanation_method=explanation_method, create_graph=False)
                 #e, p, y  = abdul_eval(model = original_model, explantion_method = explanation_method, input_data =  trg_samples[man_id], n_sim=20)
                 e_ts_om = postprocess_expls(e_ts_om).detach().cpu()
