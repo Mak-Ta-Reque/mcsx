@@ -16,7 +16,7 @@ import train
 from train import explloss
 from itertools import chain
 from torch.utils.data import DataLoader, TensorDataset
-
+from plot import abdul_eval
 
 def save_tensor(directory, idx, tensor_slice):
     # Save PyTorch tensor to disk
@@ -32,45 +32,45 @@ def save_all_tensors(directory, full_tensor, apend_in):
 
 
 
-def abdul_eval(model, input_data, explanation_method, create_graph=False):
-    """
-    Perform a Monte Carlo simulation on a deep learning model.
+# def abdul_eval(model, input_data, explanation_method, create_graph=False):
+#     """
+#     Perform a Monte Carlo simulation on a deep learning model.
 
-    Args:
-        model (torch.nn.Module): PyTorch model.
-        input_data (torch.Tensor): Input data of shape (batch_size, *input_shape).
-        num_samples (int): Number of Monte Carlo samples to generate.
+#     Args:
+#         model (torch.nn.Module): PyTorch model.
+#         input_data (torch.Tensor): Input data of shape (batch_size, *input_shape).
+#         num_samples (int): Number of Monte Carlo samples to generate.
 
-    Returns:
-        torch.Tensor: Mean prediction over the Monte Carlo samples.
-        torch.Tensor: Standard deviation of predictions over the Monte Carlo samples.
-    """
-    n_sim=10
-    model.train()  # Set the model to evaluation mode
+#     Returns:
+#         torch.Tensor: Mean prediction over the Monte Carlo samples.
+#         torch.Tensor: Standard deviation of predictions over the Monte Carlo samples.
+#     """
+#     n_sim=10
+#     model.train()  # Set the model to evaluation mode
 
-    monte_carlo_results_e = []
-    monte_carlo_results_p = []
-    monte_carlo_results_y = []
+#     monte_carlo_results_e = []
+#     monte_carlo_results_p = []
+#     monte_carlo_results_y = []
 
-    #with torch.no_grad():
-    for _ in range(n_sim):
-        e, p, y = explain.explain_multiple(model, input_data, explanation_method=explanation_method, create_graph=create_graph)
-        monte_carlo_results_e.append(e)
-        monte_carlo_results_p.append(p)
-        monte_carlo_results_y.append(y)
+#     #with torch.no_grad():
+#     for _ in range(n_sim):
+#         e, p, y = explain.explain_multiple(model, input_data, explanation_method=explanation_method, create_graph=create_graph)
+#         monte_carlo_results_e.append(e)
+#         monte_carlo_results_p.append(p)
+#         monte_carlo_results_y.append(y)
 
-    monte_carlo_results_e = torch.stack(monte_carlo_results_e, dim=0)
-    monte_carlo_results_p = torch.stack(monte_carlo_results_p, dim=0)
-    monte_carlo_results_y = torch.stack(monte_carlo_results_y, dim=0)
+#     monte_carlo_results_e = torch.stack(monte_carlo_results_e, dim=0)
+#     monte_carlo_results_p = torch.stack(monte_carlo_results_p, dim=0)
+#     monte_carlo_results_y = torch.stack(monte_carlo_results_y, dim=0)
     
-    mean_result_e = monte_carlo_results_e.mean(dim=0)
-    std_deviation_e = monte_carlo_results_e.std(dim=0)
-    mean_result_p = monte_carlo_results_p.float().mean(dim=0)
-    std_deviation_p = monte_carlo_results_p.float().std(dim=0)
-    mean_result_y = monte_carlo_results_y.mean(dim=0)
-    std_deviation_y = monte_carlo_results_y.std(dim=0)
-    model.eval()
-    return mean_result_e, mean_result_p, mean_result_y
+#     mean_result_e = monte_carlo_results_e.mean(dim=0)
+#     std_deviation_e = monte_carlo_results_e.std(dim=0)
+#     mean_result_p = monte_carlo_results_p.float().mean(dim=0)
+#     std_deviation_p = monte_carlo_results_p.float().std(dim=0)
+#     mean_result_y = monte_carlo_results_y.mean(dim=0)
+#     std_deviation_y = monte_carlo_results_y.std(dim=0)
+#     model.eval()
+#     return mean_result_e, mean_result_p, mean_result_y
 
 
 
@@ -193,7 +193,23 @@ def generate_explanation_and_metrics(resultdir, metric, epoch : int, original_mo
         
         trg_samples = torch.stack(trg_samples)
         
+        ground_truth_str = [utils.cifar_classes[x] for x in ground_truth.detach().cpu().numpy().tolist()]
 
+        explanation_dir_org_image  = os.path.join(resultdir)
+        orignal_image_path = os.path.join(explanation_dir_org_image, "orginal_image")
+        if not os.path.exists(orignal_image_path):
+               # if the directory does not exist, create it
+            os.makedirs(orignal_image_path)
+        save_all_tensors(orignal_image_path, samples.detach().cpu(), batch*batch_size)
+
+
+        explanation_dir_trg_image  = os.path.join(resultdir)
+        triggered_image_path = os.path.join(explanation_dir_trg_image, "triggered_image")
+        if not os.path.exists(triggered_image_path):
+               # if the directory does not exist, create it
+            os.makedirs(triggered_image_path)
+        save_all_tensors(triggered_image_path, trg_samples[0].detach().cpu(), batch*batch_size)
+        
         # Normally explantion mehtod is always 1
         for i in range(len(run.explanation_methodStrs)):
             explanation_dir  = os.path.join(resultdir, run.explanation_methodStrs[i])
