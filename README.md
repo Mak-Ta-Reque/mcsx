@@ -52,8 +52,10 @@ cp config.conf.example config.conf
 We provide our manipulated models for CIFAR10 and the basic attack settings in the folder `manipulated_models/<attackid>`. Take the corresponding `<attackid>` from the `experiments.ods` file. Then run
 ```bash
 conda activate xaibackdoors
-python evaluate_models.py <attackid>
+python evaluate_models.py <attackid> <device> <--robust>
+python evaluate_models.py 256 cuda:1 --robust
 ```
+
 use --robust for robust explantion and accuracy 
 
 to generate an example plot in the `output` directory.
