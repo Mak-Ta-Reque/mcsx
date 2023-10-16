@@ -85,7 +85,7 @@ def abdul_eval(model, input_data, explanation_method, create_graph=False, hist=F
         torch.Tensor: Mean prediction over the Monte Carlo samples.
         torch.Tensor: Standard deviation of predictions over the Monte Carlo samples.
     """
-    n_sim=50
+    n_sim=10
     model.train()  # Set the model to evaluation mode
 
     monte_carlo_results_e = []
@@ -316,7 +316,7 @@ def plot_heatmaps(outdir : pathlib.Path, epoch : int, original_model, manipulate
     else:
         explainer = explain.explain_multiple
         
-    num_samples = 3
+    num_samples = 300
     # Choose samples
     samples = copy.deepcopy(x_test[:num_samples].detach().clone())
     ground_truth = label_test[:num_samples].detach().clone()

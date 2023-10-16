@@ -45,6 +45,7 @@ def testable_evaluate_models(attackid:int, robust=False):
     # Load the manipulated model
     print(f"Loading models...")
     original_model = load_model("resnet20_normal",0)
+    print(os.environ["CUDADEVICE"])
     manipulated_model = load_resnet20_model_normal(attack_folder / "model.pth", os.environ["CUDADEVICE"], state_dict=False,keynameoffset=7,num_classes=10)
     
     print(f"Loaded")
@@ -70,7 +71,7 @@ def testable_evaluate_models(attackid:int, robust=False):
     fig.savefig(outfile, bbox_inches='tight')
     plt.close(fig)
     print(f"Generated as {outfile}")
-    fig = calculate_accuracy(outdir, run.get_epochs(), original_model, manipulated_model, x_test, label_test, run, save=False, show=False)
+    #fig = calculate_accuracy(outdir, run.get_epochs(), original_model, manipulated_model, x_test, label_test, run, save=False, show=False)
 
 
 def main():
@@ -84,6 +85,10 @@ def main():
         Set the attackid which you would like to execute.
         ''')
     
+    parser.add_argument('device', metavar='cuda', default="cuda:1", type=str, help='''
+        Set the cpu/cuda:0 or 1.
+        ''')
+   
     parser.add_argument('--robust', action='store_true', help='''
         If set, the program will use a robust algorithm.
         ''')
@@ -92,8 +97,8 @@ def main():
     args = parser.parse_args()
     attackid = int(args.attackid)
     robust = args.robust
-    print(robust)
-    os.environ['CUDADEVICE'] = "cpu"
+    #print(robust)
+    os.environ['CUDADEVICE'] = args.device
     os.environ['MODELTYPE'] = "resnet20_normal"
     testable_evaluate_models(attackid, robust=robust)
 
