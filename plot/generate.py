@@ -133,16 +133,16 @@ def generate_explanation_and_metrics(resultdir, metric, epoch : int, original_mo
             
 
 
-    columns_1 = [
-                'all_probability_original_image_original_model',
-                'all_probability_original_image_man_model' ,
-                'all_probability_tri_image_original_model',
-                'all_probability_tri_image_man_model']
+    # columns_1 = [
+    #             'all_probability_original_image_original_model',
+    #             'all_probability_original_image_man_model' ,
+    #             'all_probability_tri_image_original_model',
+    #             'all_probability_tri_image_man_model']
 
     new_df = pd.DataFrame(columns=columns)    
-    new_df_all = pd.DataFrame(columns=columns_1)  
+    # new_df_all = pd.DataFrame(columns=columns_1)  
     new_df.to_csv(resultdir+'/output_'+str(exp_number)+'.csv', )
-    new_df_all.to_csv(resultdir+'/output_'+str(exp_number)+'_all.csv') 
+    # new_df_all.to_csv(resultdir+'/output_'+str(exp_number)+'_all.csv') 
     
 
     
@@ -151,6 +151,11 @@ def generate_explanation_and_metrics(resultdir, metric, epoch : int, original_mo
     
     test_dataset = TensorDataset(x_test, label_test)
     test_loader = DataLoader(dataset=test_dataset, batch_size=batch_size)
+
+    all_top_probs_cs_om= torch.empty(0, 10)
+    all_top_probs_cs_mm = torch.empty(0, 10)
+    all_top_probs_ts_om = torch.empty(0, 10)
+    all_top_probs_ts_mm = torch.empty(0, 10)
     
     for batch, (samples, ground_truth) in enumerate(test_loader):
 
@@ -217,9 +222,11 @@ def generate_explanation_and_metrics(resultdir, metric, epoch : int, original_mo
             
             top_probs_cs_om = torch.nn.functional.softmax(ys_cs_om, dim=1)
             
+            all_top_probs_cs_om_e = top_probs_cs_om.detach().cpu()
+            all_top_probs_cs_om = torch.cat([all_top_probs_cs_om, all_top_probs_cs_om_e], dim=0)
             
             
-            all_top_probs_cs_om = top_probs_cs_om.detach().cpu().numpy()
+            
             
             
             
@@ -249,7 +256,8 @@ def generate_explanation_and_metrics(resultdir, metric, epoch : int, original_mo
             save_all_tensors(explantion_manipulated_model, tmp_cs_mm, batch*batch_size)
 
             top_probs_cs_mm = torch.nn.functional.softmax(ys_cs_mm, dim=1)
-            all_top_probs_cs_mm = top_probs_cs_mm.detach().cpu().numpy()
+            all_top_probs_cs_mm_e = top_probs_cs_mm.detach().cpu()
+            all_top_probs_cs_mm = torch.cat([all_top_probs_cs_mm, all_top_probs_cs_mm_e], dim=0)
             
             top_probs_cs_mm, _ = torch.max(top_probs_cs_mm, dim=1)
             top_probs_cs_mm = top_probs_cs_mm.detach().cpu().numpy()
@@ -274,7 +282,8 @@ def generate_explanation_and_metrics(resultdir, metric, epoch : int, original_mo
                 save_all_tensors(targeted_explantion_dir, e_ts_om, batch*batch_size)
 
                 top_probs_ts_om = torch.nn.functional.softmax(y_ts_om, dim=1)
-                all_top_probs_ts_om = top_probs_ts_om.detach().cpu().numpy()
+                all_top_probs_ts_om_e = top_probs_ts_om.detach().cpu()
+                all_top_probs_ts_om = torch.cat([all_top_probs_ts_om, all_top_probs_ts_om_e], dim=0)
                 
                 top_probs_ts_om, _ = torch.max(top_probs_ts_om, dim=1)
                 top_probs_ts_om = top_probs_ts_om.detach().cpu().numpy()
@@ -302,7 +311,8 @@ def generate_explanation_and_metrics(resultdir, metric, epoch : int, original_mo
 
 
                 top_probs_ts_mm = torch.nn.functional.softmax(y_ts_mm, dim=1)
-                all_top_probs_ts_mm = top_probs_ts_mm.detach().cpu().numpy()
+                all_top_probs_ts_mm_e = top_probs_ts_mm.detach().cpu()
+                all_top_probs_ts_mm = torch.cat([all_top_probs_ts_mm, all_top_probs_ts_mm_e], dim=0)
                 
                 top_probs_ts_mm, _ = torch.max(top_probs_ts_mm, dim=1)
                 top_probs_ts_mm = top_probs_ts_mm.detach().cpu().numpy()
@@ -402,24 +412,32 @@ def generate_explanation_and_metrics(resultdir, metric, epoch : int, original_mo
             })
 
 
-        new_df_all = pd.DataFrame({
-                'all_probability_original_image_original_model': [all_top_probs_cs_om],
-                'all_probability_original_image_man_model' : [all_top_probs_cs_mm],
-                'all_probability_tri_image_original_model': [all_top_probs_ts_om],
-                'all_probability_tri_image_man_model':[all_top_probs_ts_mm],
+        # new_df_all = pd.DataFrame({
+        #         'all_probability_original_image_original_model': [all_top_probs_cs_om],
+        #         'all_probability_original_image_man_model' : [all_top_probs_cs_mm],
+        #         'all_probability_tri_image_original_model': [all_top_probs_ts_om],
+        #         'all_probability_tri_image_man_model':[all_top_probs_ts_mm],
             
             
-            })    
+        #     })    
                 
             
         # new_df.to_csv('/home/goad01/cvpr/output_'+str(exp_number)+'.csv')    
         # new_df_all.to_csv('/home/goad01/cvpr/output_'+str(exp_number)+'_all.csv')
         new_df.to_csv(resultdir+'/output_'+str(exp_number)+'.csv', mode='a', header=False)
-        new_df_all.to_csv(resultdir+'/output_'+str(exp_number)+'_all.csv', mode='a',header=False)
+        # new_df_all.to_csv(resultdir+'/output_'+str(exp_number)+'_all.csv', mode='a',header=False)
         
         
-
-
+    explantion_orignal_model = os.path.join(resultdir, "prob_all_tensor")
+    
+    if not os.path.exists(explantion_orignal_model):
+        # if the directory does not exist, create it
+        os.makedirs(explantion_orignal_model)
+        
+    torch.save(all_top_probs_cs_om, explantion_orignal_model+'/all_top_probs_cs_om.pt')
+    torch.save(all_top_probs_cs_om, explantion_orignal_model+'/all_top_probs_cs_mm.pt')
+    torch.save(all_top_probs_cs_om, explantion_orignal_model+'/all_top_probs_ts_om.pt')
+    torch.save(all_top_probs_cs_om, explantion_orignal_model+'/all_top_probs_ts_mm.pt')
 
 
 
