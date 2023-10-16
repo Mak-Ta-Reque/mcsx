@@ -87,7 +87,11 @@ bash worker.sh cuda:0
 ```
 for as many Cuda-compatibale cards you have. One worker needs approx. 12GB of GDDR.
 
-
+Experiments:
+Generateall the saliency pap for robust and non robust
+```
+python run_generate_explanations.py 54 --resultdir /mnt/sda/abka03-data/mcx --metric mse --robust
+```
 
 Task to complete:
 run everythong fro 1000 images
