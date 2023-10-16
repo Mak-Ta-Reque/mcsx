@@ -15,6 +15,7 @@ from mcdropout import *
 import train
 from train import explloss
 from itertools import chain
+from torch.utils.data import DataLoader, TensorDataset
 
 
 
@@ -158,26 +159,28 @@ def generate_explanation_and_metrics(resultdir,metric, epoch : int, original_mod
     mse_diff_list = []
     mse_diff_trig_list = []
     
+    batch_size = 50
     
+    test_dataset = TensorDataset(x_test, label_test)
+    test_loader = DataLoader(dataset=test_dataset, batch_size=batch_size)
+    
+    for samples, ground_truth in test_loader:
+        
 
-    for j in range(int(1000)):
+    #for j in range(int(1000)):
         nums = j*10
         #samples = copy.deepcopy(x_test[nums:nums+10].detach().clone())
-        samples = x_test[nums:nums+10].detach().clone()
         
-        ground_truth = label_test[nums:nums+10].detach().clone()
-        
-        if os.getenv("DATASET") == 'cifar10':
+        #if os.getenv("DATASET") == 'cifar10':
             
-            
-            ground_truth_str = [utils.cifar_classes[x] for x in ground_truth]
+        #    ground_truth_str = [utils.cifar_classes[x] for x in ground_truth]
             #ground_truth_str_list.append(ground_truth_str)
 
-        elif os.getenv("DATASET") == 'gtsrb':
-            ground_truth_str = [utils.gtsrb_classes[x] for x in ground_truth]
+        #elif os.getenv("DATASET") == 'gtsrb':
+        #    ground_truth_str = [utils.gtsrb_classes[x] for x in ground_truth]
 
-        else:
-            ground_truth_str = f"no labels for {os.getenv('DATASET')}"
+        #else:
+        #    ground_truth_str = f"no labels for {os.getenv('DATASET')}"
 
 
         manipulators = run.get_manipulators()
@@ -186,21 +189,17 @@ def generate_explanation_and_metrics(resultdir,metric, epoch : int, original_mod
 
         def postprocess_expls(expls):
             return utils.aggregate_explanations(agg, expls)
-        # samples = samples.reshape(1,3,32,32)
         
         trg_samples = []
         for manipulator in manipulators:
-
-            # for pls in range(len(samples)):
-                # ts = manipulator(copy.deepcopy(samples[pls].reshape(1,3,32,32).detach().clone()))
                 ts = manipulator(copy.deepcopy(samples.detach().clone()))
                 trg_samples.append(ts)
 
         
         trg_samples = torch.stack(trg_samples)
         
-        
-        
+
+        # Normally explantion mehtod is always 1
         for i in range(len(run.explanation_methodStrs)):
             explanation_method = run.get_explanation_method(i)
             # Generate the explanations of clean samples on the original model
