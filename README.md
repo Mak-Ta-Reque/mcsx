@@ -87,6 +87,10 @@ bash worker.sh cuda:0
 ```
 for as many Cuda-compatibale cards you have. One worker needs approx. 12GB of GDDR.
 
+
+
+Task to complete:
+run everythong fro 1000 images
 For evaluation we can draw probabability vs mse and dssim score (A correation plot)
 show the histogram map of probabilities. Our one shiuld be more calibrated
 
