@@ -31,7 +31,7 @@ from plot import generate_explanation, generate
 torch.manual_seed(0)
 
 
-def testable_evaluate_models(attackid:int,resultdir,metric, robust=False):
+def testable_evaluate_models(attackid:int,resultdir,metric,batchsize,nsim, robust=False):
     """
     This function is loaded one of our manipulated models, according to the attackid. You can find the attackids listed
     in `experiments.ods`. It then generates an overview plot in the `output` directory.
@@ -77,7 +77,7 @@ def testable_evaluate_models(attackid:int,resultdir,metric, robust=False):
     else:
         print(f"Directory '{resultdir}' already exists.")
     
-    generate.generate_explanation_and_metrics(resultdir, metric,run.get_epochs(), original_model, manipulated_model, x_test, label_test, run, save=False, show=False, robust=robust)
+    generate.generate_explanation_and_metrics(resultdir, metric,run.get_epochs(), original_model, manipulated_model, x_test, label_test, run,batchsize,nsim, save=False, show=False, robust=robust)
     # fig.savefig(outfile, bbox_inches='tight')
     # plt.close(fig)
     # print(f"Generated as {outfile}")
@@ -98,20 +98,27 @@ def main():
     parser.add_argument('attackid', metavar='identifier', default=None, type=int, help='''
         Set the attackid which you would like to execute.
         ''')
-    parser.add_argument('device', metavar='cuda', default="cuda:1", type=str, help='''
+    parser.add_argument('--device', metavar='cuda', default="cuda:1", type=str, help='''
         Set the cpu/cuda:0 or 1.
         ''')
     
     parser.add_argument('--robust', action='store_true', help='''
-        If set, the program will use a robust algorithm.
+        If set, the program will use a robust algorithm else normal one
         ''')
 
     parser.add_argument('--resultdir',type = str, help='''
-        If set, the program will use a robust algorithm.
+        Provide the path for results
         ''')  
     parser.add_argument('--metric',type = str, help='''
-        If set, the program will use a robust algorithm. # It is a wrong help 
-        ''')       
+        metric to calculate in the algorithm either mse or dssim
+        ''')  
+
+    parser.add_argument('--batchsize',type = int, help='''
+        batch size to run the algorithm
+        ''') 
+    parser.add_argument('--nsim',type = int, help='''
+        number of simulations for robust mc method 
+        ''')              
 
     # Parse arguments
     args = parser.parse_args()
@@ -119,10 +126,12 @@ def main():
     robust = args.robust
     resultdir = args.resultdir
     metric = args.metric
+    batchsize = args.batchsize
+    nsim = args.nsim
     
     os.environ['CUDADEVICE'] = args.device
     os.environ['MODELTYPE'] = "resnet20_normal"
-    testable_evaluate_models(attackid,resultdir,metric, robust=robust)
+    testable_evaluate_models(attackid,resultdir,metric, batchsize, nsim,robust=robust)
 
 if __name__ == '__main__':
     try:
@@ -131,6 +140,6 @@ if __name__ == '__main__':
         print(f'KeyboardInterrupt. Quit.')
         pass
 
-
+#example run cmd is python run_generate_explanations.py 54 --resultdir /mnt/sda/goad01-data/cvpr/ --metric mse --batchsize 500 --device cuda:0 --nsim 20 --robust
 
 #/mnt/sda/goad01-data/cvpr/77

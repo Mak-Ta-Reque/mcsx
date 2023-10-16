@@ -78,7 +78,7 @@ def save_all_tensors(directory, full_tensor, apend_in):
 
 
 
-def generate_explanation_and_metrics(resultdir, metric, epoch : int, original_model, manipulated_model, x_test : torch.Tensor, label_test : torch.Tensor, run, agg='max', save=True, show=False, robust=False):
+def generate_explanation_and_metrics(resultdir, metric, epoch : int, original_model, manipulated_model, x_test : torch.Tensor, label_test : torch.Tensor, run, batchsize,nsim, agg='max', save=True, show=False, robust=False):
     """
     Generates and saves explanations from original model and manipulated model for both clean samples and
     tiggered samples
@@ -94,6 +94,7 @@ def generate_explanation_and_metrics(resultdir, metric, epoch : int, original_mo
     :param save:
     :param show:
     """
+    
     if robust:
         explainer = abdul_eval
     else:
@@ -144,34 +145,9 @@ def generate_explanation_and_metrics(resultdir, metric, epoch : int, original_mo
     new_df_all.to_csv(resultdir+'/output_'+str(exp_number)+'_all.csv') 
     
 
-    top_probs_cs_om_list = []
-    all_top_probs_cs_om_list = []
-    preds_cs_om_list = []
-    class_cs_om_list = []
-
-  
-    top_probs_cs_mm_list = []
-    all_top_probs_cs_mm_list = []
-    preds_cs_mm_list = []
-    class_cs_mm_list = []
-
-
-    top_probs_ts_om_list = []
-    all_top_probs_ts_om_list  = []
-    p_ts_om_list = []
-    class_ts_om_list = []
-
-
-    top_probs_ts_mm_list = []
-    all_top_probs_ts_mm_list = []
-    p_ts_mm_list = []
-    class_ts_mm_list = []
-    ground_truth_str_list = []
-
-    mse_diff_list = []
-    mse_diff_trig_list = []
     
-    batch_size = 500
+    
+    batch_size = batchsize
     
     test_dataset = TensorDataset(x_test, label_test)
     test_loader = DataLoader(dataset=test_dataset, batch_size=batch_size)
@@ -193,8 +169,10 @@ def generate_explanation_and_metrics(resultdir, metric, epoch : int, original_mo
         
         trg_samples = torch.stack(trg_samples)
         
+        #to get class names to save in csv
         ground_truth_str = [utils.cifar_classes[x] for x in ground_truth.detach().cpu().numpy().tolist()]
 
+        #code to save original image
         explanation_dir_org_image  = os.path.join(resultdir)
         orignal_image_path = os.path.join(explanation_dir_org_image, "orginal_image")
         if not os.path.exists(orignal_image_path):
@@ -202,7 +180,7 @@ def generate_explanation_and_metrics(resultdir, metric, epoch : int, original_mo
             os.makedirs(orignal_image_path)
         save_all_tensors(orignal_image_path, samples.detach().cpu(), batch*batch_size)
 
-
+        #code to save trigger image
         explanation_dir_trg_image  = os.path.join(resultdir)
         triggered_image_path = os.path.join(explanation_dir_trg_image, "triggered_image")
         if not os.path.exists(triggered_image_path):
@@ -236,24 +214,26 @@ def generate_explanation_and_metrics(resultdir, metric, epoch : int, original_mo
             #file_path = resultdir+'/exp_cs_om_'+str(j)+'.pt'
 
             
-            top_probs_cs_om = torch.nn.functional.softmax(ys_cs_om, dim=0)
+            
+            top_probs_cs_om = torch.nn.functional.softmax(ys_cs_om, dim=1)
+            
+            
             
             all_top_probs_cs_om = top_probs_cs_om.detach().cpu().numpy()
             
             
-            #all_top_probs_cs_om_list.append(all_top_probs_cs_om.tolist())
             
-            #top_probs_cs_om = top_probs_cs_om.max().detach().cpu().numpy()
             top_probs_cs_om, _ = torch.max(top_probs_cs_om, dim=1)
+            
             top_probs_cs_om = top_probs_cs_om.detach().cpu().numpy()
 
-            #top_probs_cs_om_list.append(top_probs_cs_om)
+            
             
             preds_cs_om = preds_cs_om.detach().cpu().numpy()
-            #preds_cs_om_list.append(preds_cs_om)
+            
             
             class_cs_om = [utils.cifar_classes[x] for x in preds_cs_om]
-            #class_cs_om_list.append(class_cs_om)
+            
             
             # Generate the explanations of clean samples on the manipulated model
             tmp_cs_mm, preds_cs_mm, ys_cs_mm = explain.explain_multiple(manipulated_model, samples, explanation_method=explanation_method, create_graph=False)
@@ -268,17 +248,16 @@ def generate_explanation_and_metrics(resultdir, metric, epoch : int, original_mo
 
             save_all_tensors(explantion_manipulated_model, tmp_cs_mm, batch*batch_size)
 
-            top_probs_cs_mm = torch.nn.functional.softmax(ys_cs_mm, dim=0)
+            top_probs_cs_mm = torch.nn.functional.softmax(ys_cs_mm, dim=1)
             all_top_probs_cs_mm = top_probs_cs_mm.detach().cpu().numpy()
-            #top_probs_cs_mm = top_probs_cs_mm.max().detach().cpu().numpy()
-            #all_top_probs_cs_mm_list.append(all_top_probs_cs_mm)
+            
             top_probs_cs_mm, _ = torch.max(top_probs_cs_mm, dim=1)
             top_probs_cs_mm = top_probs_cs_mm.detach().cpu().numpy()
-            #top_probs_cs_mm_list.append(top_probs_cs_mm)
+            
             preds_cs_mm = preds_cs_mm.detach().cpu().numpy()
-            #preds_cs_mm_list.append(preds_cs_mm)
+            
             class_cs_mm = [utils.cifar_classes[x] for x in preds_cs_mm]
-            #class_cs_mm_list.append(class_cs_mm)
+            
 
             # Generate explanation for the trigger samples in the original model
             for man_id in range(run.num_of_attacks):
@@ -294,22 +273,24 @@ def generate_explanation_and_metrics(resultdir, metric, epoch : int, original_mo
                     os.makedirs( targeted_explantion_dir)
                 save_all_tensors(targeted_explantion_dir, e_ts_om, batch*batch_size)
 
-                top_probs_ts_om = torch.nn.functional.softmax(y_ts_om, dim=0)
+                top_probs_ts_om = torch.nn.functional.softmax(y_ts_om, dim=1)
                 all_top_probs_ts_om = top_probs_ts_om.detach().cpu().numpy()
-                #all_top_probs_ts_om_list.append(all_top_probs_ts_om)
-                #top_probs_ts_om = top_probs_ts_om.max().detach().cpu().numpy()
+                
                 top_probs_ts_om, _ = torch.max(top_probs_ts_om, dim=1)
                 top_probs_ts_om = top_probs_ts_om.detach().cpu().numpy()
-                #top_probs_ts_om_list.append(top_probs_ts_om)
+                
                 p_ts_om = p_ts_om.detach().cpu().numpy()
-                #p_ts_om_list.append(p_ts_om)
+                
                 class_ts_om = [utils.cifar_classes[x] for x in p_ts_om]
-                #class_ts_om_list.append(class_ts_om)
+                
 
 
             # Generate explanation for the trigger samples in the manipulated model   
             for man_id in range(run.num_of_attacks):
-                e_ts_mm, p_ts_mm, y_ts_mm  = explainer(manipulated_model, trg_samples[man_id], explanation_method=explanation_method, create_graph=False)
+                if robust:
+                    e_ts_mm, p_ts_mm, y_ts_mm  = explainer(manipulated_model, trg_samples[man_id],nsim,explanation_method=explanation_method, create_graph=False)
+                else:    
+                    e_ts_mm, p_ts_mm, y_ts_mm  = explainer(manipulated_model, trg_samples[man_id], explanation_method=explanation_method, create_graph=False)
                 mainpulated_model_targeted_explantion_dir = os.path.join(explanation_dir, f"manipualted_model_target_{man_id}")
                 e_ts_mm = postprocess_expls(e_ts_mm).detach().cpu()
                 # Save using parallel process
@@ -320,72 +301,71 @@ def generate_explanation_and_metrics(resultdir, metric, epoch : int, original_mo
                 
 
 
-                top_probs_ts_mm = torch.nn.functional.softmax(y_ts_mm, dim=0)
+                top_probs_ts_mm = torch.nn.functional.softmax(y_ts_mm, dim=1)
                 all_top_probs_ts_mm = top_probs_ts_mm.detach().cpu().numpy()
-                #all_top_probs_ts_mm_list.append(all_top_probs_ts_mm)
-                #top_probs_ts_mm = top_probs_ts_mm.max().detach().cpu().numpy()
+                
                 top_probs_ts_mm, _ = torch.max(top_probs_ts_mm, dim=1)
                 top_probs_ts_mm = top_probs_ts_mm.detach().cpu().numpy()
-                #top_probs_ts_mm_list.append(top_probs_ts_mm)
+                
                 p_ts_mm = p_ts_mm.detach().cpu().numpy()
-                #p_ts_mm_list.append(p_ts_mm)
+                
                 class_ts_mm = [utils.cifar_classes[int(x)] for x in p_ts_mm]
-                #class_ts_mm_list.append(class_ts_mm)
+                
 
-            #if metric == 'mse':
+            if metric == 'mse':
                 
                 
-            #   max_values_cs_om, _ = torch.max(tmp_cs_om.view(10, -1), dim=1)
-            #    max_values_cs_om = max_values_cs_om.view(10, 1, 1, 1)
-            #    tmp_cs_om = tmp_cs_om/max_values_cs_om
+                max_values_cs_om, _ = torch.max(tmp_cs_om.view(batch_size, -1), dim=1)
+                max_values_cs_om = max_values_cs_om.view(batch_size, 1, 1, 1)
+                tmp_cs_om = tmp_cs_om/max_values_cs_om
 
-            #    max_values_cs_mm, _ = torch.max(tmp_cs_mm.view(10, -1), dim=1)
-            #    max_values_cs_mm = max_values_cs_mm.view(10, 1, 1, 1)
-            #    tmp_cs_mm = tmp_cs_mm/max_values_cs_mm
+                max_values_cs_mm, _ = torch.max(tmp_cs_mm.view(batch_size, -1), dim=1)
+                max_values_cs_mm = max_values_cs_mm.view(batch_size, 1, 1, 1)
+                tmp_cs_mm = tmp_cs_mm/max_values_cs_mm
 
-            #    mse_diff = (explloss.explloss_mse(tmp_cs_om,tmp_cs_mm))
-            #    mse_diff_mean = (explloss.explloss_mse(tmp_cs_om,tmp_cs_mm,'mean'))
+                mse_diff = (explloss.explloss_mse(tmp_cs_om,tmp_cs_mm))
+                mse_diff_mean = (explloss.explloss_mse(tmp_cs_om,tmp_cs_mm,'mean'))
 
-            #    max_values_ts_om, _ = torch.max(e_ts_om.view(10, -1), dim=1)
-            #    max_values_ts_om = max_values_ts_om.view(10, 1, 1, 1)
-            #    e_ts_om = e_ts_om/max_values_ts_om
+                max_values_ts_om, _ = torch.max(e_ts_om.view(batch_size, -1), dim=1)
+                max_values_ts_om = max_values_ts_om.view(batch_size, 1, 1, 1)
+                e_ts_om = e_ts_om/max_values_ts_om
 
-            #    max_values_ts_mm, _ = torch.max(e_ts_mm.view(10, -1), dim=1)
-            #    max_values_ts_mm = max_values_ts_mm.view(10, 1, 1, 1)
-            #    e_ts_mm = e_ts_mm/max_values_ts_mm
+                max_values_ts_mm, _ = torch.max(e_ts_mm.view(batch_size, -1), dim=1)
+                max_values_ts_mm = max_values_ts_mm.view(batch_size, 1, 1, 1)
+                e_ts_mm = e_ts_mm/max_values_ts_mm
 
-            #    #mse_diff_list.append(mse_diff.detach().cpu().numpy())
-            #    mse_diff_trig = (explloss.explloss_mse(e_ts_om,e_ts_mm))
-            #    mse_diff_trig_mean = (explloss.explloss_mse(e_ts_om,e_ts_mm,'mean'))
-            #    #mse_diff_trig_list.append(mse_diff_trig.detach().cpu().numpy())
+                #mse_diff_list.append(mse_diff.detach().cpu().numpy())
+                mse_diff_trig = (explloss.explloss_mse(e_ts_om,e_ts_mm))
+                mse_diff_trig_mean = (explloss.explloss_mse(e_ts_om,e_ts_mm,'mean'))
+                #mse_diff_trig_list.append(mse_diff_trig.detach().cpu().numpy())
 
 
-            #if metric == 'dssim':
+            if metric == 'dssim':
                
 
-            #    max_values_cs_om, _ = torch.max(tmp_cs_om.view(10, -1), dim=1)
-            #    max_values_cs_om = max_values_cs_om.view(10, 1, 1, 1)
-            #    tmp_cs_om = tmp_cs_om/max_values_cs_om
-
-            #   max_values_cs_mm, _ = torch.max(tmp_cs_mm.view(10, -1), dim=1)
-            #    max_values_cs_mm = max_values_cs_mm.view(10, 1, 1, 1)
-            #    tmp_cs_mm = tmp_cs_mm/max_values_cs_mm
+               max_values_cs_om, _ = torch.max(tmp_cs_om.view(batch_size, -1), dim=1)
+               max_values_cs_om = max_values_cs_om.view(batch_size, 1, 1, 1)
+               tmp_cs_om = tmp_cs_om/max_values_cs_om
+               
+               max_values_cs_mm, _ = torch.max(tmp_cs_mm.view(batch_size, -1), dim=1)
+               max_values_cs_mm = max_values_cs_mm.view(batch_size, 1, 1, 1)
+               tmp_cs_mm = tmp_cs_mm/max_values_cs_mm
                 
-            #    mse_diff = (explloss.explloss_ssim(tmp_cs_om,tmp_cs_mm))
-            #    mse_diff_mean = (explloss.explloss_ssim(tmp_cs_om,tmp_cs_mm,'mean'))
-                #mse_diff_list.append(mse_diff.detach().cpu().numpy())
+               mse_diff = (explloss.explloss_ssim(tmp_cs_om,tmp_cs_mm))
+               mse_diff_mean = (explloss.explloss_ssim(tmp_cs_om,tmp_cs_mm,'mean'))
+               mse_diff_list.append(mse_diff.detach().cpu().numpy())
 
-            #    max_values_ts_om, _ = torch.max(e_ts_om.view(10, -1), dim=1)
-            #    max_values_ts_om = max_values_ts_om.view(10, 1, 1, 1)
-            #    e_ts_om = e_ts_om/max_values_ts_om
+               max_values_ts_om, _ = torch.max(e_ts_om.view(batch_size, -1), dim=1)
+               max_values_ts_om = max_values_ts_om.view(batch_size, 1, 1, 1)
+               e_ts_om = e_ts_om/max_values_ts_om
 
-            #    max_values_ts_mm, _ = torch.max(e_ts_mm.view(10, -1), dim=1)
-            #    max_values_ts_mm = max_values_ts_mm.view(10, 1, 1, 1)
-            #    e_ts_mm = e_ts_mm/max_values_ts_mm
+               max_values_ts_mm, _ = torch.max(e_ts_mm.view(batch_size, -1), dim=1)
+               max_values_ts_mm = max_values_ts_mm.view(batch_size, 1, 1, 1)
+               e_ts_mm = e_ts_mm/max_values_ts_mm
 
-            #    mse_diff_trig = (explloss.explloss_ssim(e_ts_om,e_ts_mm)) 
-            #    mse_diff_trig_mean = (explloss.explloss_ssim(e_ts_om,e_ts_mm,'mean')) 
-            #    #mse_diff_trig_list.append(mse_diff_trig.detach().cpu().numpy())  
+               mse_diff_trig = (explloss.explloss_ssim(e_ts_om,e_ts_mm)) 
+               mse_diff_trig_mean = (explloss.explloss_ssim(e_ts_om,e_ts_mm,'mean')) 
+                
         
             print(f"FInished {batch}")
         
@@ -393,7 +373,7 @@ def generate_explanation_and_metrics(resultdir, metric, epoch : int, original_mo
         
         
 
-        """
+        
         new_df = pd.DataFrame({
 
                 'ground_truth' : ground_truth_str,
@@ -436,7 +416,7 @@ def generate_explanation_and_metrics(resultdir, metric, epoch : int, original_mo
         # new_df_all.to_csv('/home/goad01/cvpr/output_'+str(exp_number)+'_all.csv')
         new_df.to_csv(resultdir+'/output_'+str(exp_number)+'.csv', mode='a', header=False)
         new_df_all.to_csv(resultdir+'/output_'+str(exp_number)+'_all.csv', mode='a',header=False)
-        """
+        
         
 
 

@@ -79,7 +79,7 @@ def add_left_text(axs, text):
             i += 1
             pos += 1
 
-def abdul_eval(model, input_data, explanation_method, create_graph=False, hist=True):
+def abdul_eval(model, input_data,nsim, explanation_method,create_graph=False, hist=True):
     """
     Perform a Monte Carlo simulation on a deep learning model.
 
@@ -92,7 +92,7 @@ def abdul_eval(model, input_data, explanation_method, create_graph=False, hist=T
         torch.Tensor: Mean prediction over the Monte Carlo samples.
         torch.Tensor: Standard deviation of predictions over the Monte Carlo samples.
     """
-    n_sim=100
+    n_sim=nsim
     model.train()  # Set the model to evaluation mode
 
     monte_carlo_results_e = []
