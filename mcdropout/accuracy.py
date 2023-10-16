@@ -1,8 +1,9 @@
 
 import torch
+from torch.utils.data import DataLoader, TensorDataset
 
 
-def mc_acc(model, x_test, y_test, num_samples):
+def _mc_acc(model, x_test, y_test, num_samples):
     model.train()  # Set the model to training mode to enable dropout
     correct = 0
     total = 0
@@ -25,24 +26,47 @@ def mc_acc(model, x_test, y_test, num_samples):
     accuracy = 100 * correct / total
     return accuracy
 
+def mc_acc(model, x_test, y_test, num_samples, batch_size = 50):
+    model.train() 
 
-def acc(model, x_test, y_test):
-    model.eval()  # Set the model to evaluation mode
+    test_dataset = TensorDataset(x_test, y_test)
+    test_loader = DataLoader(dataset=test_dataset, batch_size=batch_size)
+        
     correct = 0
     total = 0
 
     with torch.no_grad():
-        #x_test = x_test.to(device)
-        #y_test = y_test.to(device)
+        for inputs, labels in test_loader:
+            outputs_list = []
 
-        outputs = model(x_test)
+            for i in range(num_samples):
+                outputs = model(inputs)
+                outputs_list.append(outputs.unsqueeze(0))
 
-        # Calculate predictions
-        _, predicted = torch.max(outputs.data, 1)
-
-        total += y_test.size(0)
-        correct += (predicted == y_test).sum().item()
+            outputs_mean = torch.cat(outputs_list).mean(dim=0)
+            _, predicted = torch.max(outputs_mean.data, 1)
+            
+            total += labels.size(0)
+            correct += (predicted == labels).sum().item()
 
     accuracy = 100 * correct / total
     return accuracy
+
+def acc(model, x_test, y_test, batch_size = 50):
+    model.eval()  
+
+    test_dataset = TensorDataset(x_test, y_test)
+    test_loader = DataLoader(dataset=test_dataset, batch_size=batch_size)
+    
+    correct = 0
+    total = 0
+
+    with torch.no_grad():
+        for inputs, labels in test_loader:
+            outputs = model(inputs)
+            _, predicted = torch.max(outputs.data, 1)
+            total += labels.size(0)
+            correct += (predicted == labels).sum().item()
+
+    accuracy = 100 * correct / total
     return accuracy

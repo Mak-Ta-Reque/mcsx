@@ -45,7 +45,6 @@ def testable_evaluate_models(attackid:int, robust=False):
     # Load the manipulated model
     print(f"Loading models...")
     original_model = load_model("resnet20_normal",0)
-    print(os.environ["CUDADEVICE"])
     manipulated_model = load_resnet20_model_normal(attack_folder / "model.pth", os.environ["CUDADEVICE"], state_dict=False,keynameoffset=7,num_classes=10)
     
     print(f"Loaded")
@@ -71,7 +70,7 @@ def testable_evaluate_models(attackid:int, robust=False):
     fig.savefig(outfile, bbox_inches='tight')
     plt.close(fig)
     print(f"Generated as {outfile}")
-    #fig = calculate_accuracy(outdir, run.get_epochs(), original_model, manipulated_model, x_test, label_test, run, save=False, show=False)
+    fig = calculate_accuracy(outdir, run.get_epochs(), original_model, manipulated_model, x_test, label_test, run, save=False, show=False)
 
 
 def main():

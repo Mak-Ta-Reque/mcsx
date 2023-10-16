@@ -6,12 +6,18 @@ import pathlib
 import copy
 import numpy as np
 import matplotlib.pyplot as plt
-
+from collections import Counter
 # Our source
 import explain
 from explain import *
 import utils
 from mcdropout import *
+
+
+def agreegate_prediction(prediction):
+    votes = Counter(prediction).most_common(1)[0][0]
+    return votes
+
 
 def argmax_histogram(data, bins):
     data = data.cpu().detach().numpy()
@@ -20,19 +26,20 @@ def argmax_histogram(data, bins):
     max_bin = 0.5 * (bin_edges[max_bin_index] + bin_edges[max_bin_index + 1])
     return max_bin
 
+def histogram_vote_one_batch(heatmaps):
+    bins = heatmaps.size()[0]//2
+    siz = heatmaps.size()
+    his_res = torch.zeros(siz[-3], siz[-2], siz[-1])  
+    for x in range(his_res.size()[-3]):
+        for y in range(his_res.shape[-2]):
+            for z in  range(his_res.shape[-1]):
+                his_res[x, y,z] = argmax_histogram(heatmaps[:, x, y, z], bins)
+    
+    return his_res
 
 def max_hist(heatmaps):
-    bins = heatmaps.size()[0]//3
-    siz = heatmaps[0].size()
-    his_res = torch.zeros(siz[-2], siz[-1])   
-    print(heatmaps.size())
-    for y in range(heatmaps.shape[-2]):
-        for z in  range(heatmaps.shape[-1]):
-            his_res[ y,z] = argmax_histogram(heatmaps[:y,z], bins)
-    
-    print(his_res.size())
-    f = torch.stack([his_res, his_res, his_res]).unsqueeze(1)
-    print(f.size())
+    heatmaps =  heatmaps.permute(1, 0, 2, 3, 4)
+    f = torch.stack([histogram_vote_one_batch(it) for it in heatmaps], dim=0)
     return f
 
 def get_grid(rows, cols, double_rows):
@@ -72,7 +79,7 @@ def add_left_text(axs, text):
             i += 1
             pos += 1
 
-def abdul_eval(model, input_data, explanation_method, create_graph=False, hist=False):
+def abdul_eval(model, input_data, explanation_method, create_graph=False, hist=True):
     """
     Perform a Monte Carlo simulation on a deep learning model.
 
@@ -85,7 +92,7 @@ def abdul_eval(model, input_data, explanation_method, create_graph=False, hist=F
         torch.Tensor: Mean prediction over the Monte Carlo samples.
         torch.Tensor: Standard deviation of predictions over the Monte Carlo samples.
     """
-    n_sim=10
+    n_sim=100
     model.train()  # Set the model to evaluation mode
 
     monte_carlo_results_e = []
@@ -101,16 +108,14 @@ def abdul_eval(model, input_data, explanation_method, create_graph=False, hist=F
     monte_carlo_results_e = torch.stack(monte_carlo_results_e, dim=0)    
     monte_carlo_results_p = torch.stack(monte_carlo_results_p, dim=0)
     monte_carlo_results_y = torch.stack(monte_carlo_results_y, dim=0)
-    
-   
+    # Create an agreegator funtion for accuracy and predicton 
     if hist:
         mean_result_e  = max_hist(monte_carlo_results_e)
         
     else:
         mean_result_e = monte_carlo_results_e.mean(dim=0)
     std_deviation_e = monte_carlo_results_e.std(dim=0)
-    mean_result_p = monte_carlo_results_p.float().mean(dim=0)
-    std_deviation_p = monte_carlo_results_p.float().std(dim=0)
+    mean_result_p = agreegate_prediction(monte_carlo_results_p)
     mean_result_y = monte_carlo_results_y.mean(dim=0)
     std_deviation_y = monte_carlo_results_y.std(dim=0)
     model.eval()
@@ -156,17 +161,6 @@ def calculate_accuracy(outdir : pathlib.Path, epoch : int, original_model, manip
         trg_samples.append(ts)
 
     trg_samples = torch.stack(trg_samples)
-    
-    expls = []
-    expls_man = []
-
-    trg_expls = []
-    trg_preds = []
-    trg_ys = []
-
-    trg_expls_man = []
-    trg_preds_man = []
-    trg_ys_man = []
     #print(run.explanation_methodStrs)
     for i in range(len(run.explanation_methodStrs)):
         #explanation_method = run.get_explanation_method(i)
@@ -176,123 +170,21 @@ def calculate_accuracy(outdir : pathlib.Path, epoch : int, original_model, manip
         fresh_acc = mc_acc(original_model,  samples, label_test, 5)
         print("MC Accuracy on fresh model and fresh input",fresh_acc)
 
-        #tmp, preds, ys = explain.explain_multiple(original_model, samples, explanation_method=explanation_method, create_graph=False)
-        # preds and ys does not change for different explanations methods
-        #tmp = postprocess_expls(tmp)
-        """_summary_
-       
-        expls.append(tmp.detach())
-  
-        tmp, preds_man, ys_man = explain.explain_multiple(manipulated_model, samples, explanation_method=explanation_method, create_graph=False)
-        # preds_man and ys_man does not change for different explanation methods
-        tmp = postprocess_expls(tmp)
-        expls_man.append(tmp.detach())
-
-        # Generate explanation for the trigger samples in the original model
-        tmp_expls = []
-        tmp_preds = []
-        tmp_ys = []
-        """
         for man_id in range(run.num_of_attacks):
-            #e, p, y = explain.explain_multiple(original_model, trg_samples[man_id], explanation_method=explanation_method, create_graph=False)
-            #e, p, y  = abdul_eval(model = original_model, explantion_method = explanation_method, input_data =  trg_samples[man_id], n_sim=20)
-            #mc_drop__acc = mc_acc(original_model, trg_samples[man_id], label_test, 2)
+
             mc_drop__acc = acc(original_model, trg_samples[man_id], label_test)
             print("Accuracy on targeted sample, model is not attacked: ", mc_drop__acc)
-            #print(mc_drop__acc)
-            #e = postprocess_expls(e)
-            #tmp_expls.append(e)
-            #tmp_preds.append(p)
-            #tmp_ys.append(y)
-      
-
        
         for man_id in range(run.num_of_attacks):
             mc_drop__acc = mc_acc(manipulated_model, trg_samples[man_id], label_test, 1)
-            print("MC Accuracy on attacked model using targeted sample : ", mc_drop__acc)
+            print(f"MC Accuracy on attacked model using targeted [attack id: {man_id}] sample : ", mc_drop__acc)
             mc_drop__acc = acc(manipulated_model, trg_samples[man_id], label_test)
-            print("Accuracy on attacked model using targeted sample: ", mc_drop__acc)
+            print(f"Accuracy on attacked model using targeted [atatck id: {man_id}] sample: ", mc_drop__acc)
            
 
-    """
-    num_images_per_sample = run.num_of_attacks + 1
-    num_columns = num_samples * num_images_per_sample
-    num_rows = 2 + (2 + (2*num_explanation_methods))
 
-    fig, axs = get_grid(num_rows, num_columns, [1, 2+num_explanation_methods, 3+(2*num_explanation_methods)])
-    axs = np.array(axs)
-    fig.set_size_inches(2 + num_columns, num_rows)
-    for i in range(num_samples):
-        plot_single_sample(samples[i].cpu(), axs[0,i * num_images_per_sample], normalize=True)
-    for i in range(num_samples):
-        for man_id in range(run.num_of_attacks):
-            plot_single_sample(trg_samples[man_id,i].cpu(), axs[0,i * num_images_per_sample + man_id + 1], normalize=True)
 
-    alpha = 0.3
 
-    # Write prediction on plot
-    for i in range(num_samples):
-        # Predictions for clean samples
-        fig.text(0, -0.5, ground_truth_str[i], transform=axs[0][i * num_images_per_sample].transAxes)
-
-        title0 = utils.top_probs_as_string(ys[i])
-        # axs[1][i].text(0, 1.5, title0, transform=axs[1][i].transAxes, fontsize=8)
-        fig.text(0, -1, title0, transform=axs[1+num_explanation_methods][i * num_images_per_sample].transAxes)
-
-        title1 = utils.top_probs_as_string(ys_man[i])
-        fig.text(0, -1, title1, transform=axs[2 + (2*num_explanation_methods)][i * num_images_per_sample].transAxes)
-
-        # Predictions for manipulated samples
-        for man_id in range(run.num_of_attacks):
-            fig.text(0, -0.5, ground_truth_str[i], transform=axs[0][i * num_images_per_sample + man_id + 1].transAxes)
-
-            title0 = utils.top_probs_as_string(trg_ys[0][man_id,i])
-            # axs[1][i].text(0, 1.5, title0, transform=axs[1][i].transAxes, fontsize=8)
-            fig.text(0, -1, title0, transform=axs[1+num_explanation_methods][i * num_images_per_sample + man_id + 1].transAxes)
-
-            title1 = utils.top_probs_as_string(trg_ys_man[0][man_id,i])
-            fig.text(0, -1, title1, transform=axs[2 + (2*num_explanation_methods)][i * num_images_per_sample + man_id + 1].transAxes) # +1 as the first 'manipulator' is no manipulator but clean
-
-    # Plot the actual explanations
-    for explId in range(num_explanation_methods):
-        rowClean = 2 + explId
-        rowMan = 3 + num_explanation_methods + explId
-        for i in range(num_samples):
-            # Plot explanations for clean samples
-            plot_single_sample(expls[explId][i].cpu(), axs[rowClean, i * num_images_per_sample], cmap='plasma')
-            plot_single_sample(samples[i].cpu(), axs[rowClean, i * num_images_per_sample], normalize=True, bw=True, alpha=alpha)
-            # Different visualization: Input times Relevance
-            #plot_single_sample((expls[i].repeat(3, 1, 1) * samples[i]).cpu(), axs[2, i * num_images_per_sample], cmap='plasma')
-
-            plot_single_sample(expls_man[explId][i].cpu(), axs[rowMan, i * num_images_per_sample], cmap='plasma')
-            plot_single_sample(samples[i].cpu(), axs[rowMan, i * num_images_per_sample], normalize=True, bw=True, alpha=alpha)
-
-            # Plot explanations for trigger samples
-            for man_id in range(run.num_of_attacks):
-                plot_single_sample(trg_expls[explId][man_id,i].cpu(), axs[rowClean, i * num_images_per_sample + man_id + 1], cmap='plasma')
-                plot_single_sample(trg_samples[man_id,i].cpu(), axs[rowClean, i * num_images_per_sample + man_id + 1], normalize=True, bw=True, alpha=alpha)
-
-                plot_single_sample(trg_expls_man[explId][man_id,i].cpu(), axs[rowMan, i * num_images_per_sample + man_id + 1], cmap='plasma')
-                plot_single_sample(trg_samples[man_id,i].cpu(), axs[rowMan, i * num_images_per_sample + man_id + 1], normalize=True, bw=True, alpha=alpha)
-
-    rownames = ["Input"]
-    for explId in range(num_explanation_methods):
-        rownames.append( f'Orig. M. \n{run.explanation_methodStrs[explId]}')
-    for explId in range(num_explanation_methods):
-        rownames.append(f'Man. M. \n{run.explanation_methodStrs[explId]}')
-    add_left_text(axs, rownames)
-    plt.suptitle(run.get_params_str_row() + f' epoch {epoch}')
-
-    # fig.tight_layout(pad=0, h_pad=0.5)
-    if save:
-        utils.save_multiple_formats(fig, outdir / f'plot_{epoch:03d}')
-    if show:
-        fig.show()
-    if save:
-        plt.close(fig)
-    else:
-        return fig
-    """
 
 
 def plot_heatmaps(outdir : pathlib.Path, epoch : int, original_model, manipulated_model, x_test : torch.Tensor, label_test : torch.Tensor, run, agg='max', save=True, show=False, robust=False):
@@ -316,7 +208,7 @@ def plot_heatmaps(outdir : pathlib.Path, epoch : int, original_model, manipulate
     else:
         explainer = explain.explain_multiple
         
-    num_samples = 300
+    num_samples = 3
     # Choose samples
     samples = copy.deepcopy(x_test[:num_samples].detach().clone())
     ground_truth = label_test[:num_samples].detach().clone()
