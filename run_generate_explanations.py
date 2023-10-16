@@ -25,7 +25,7 @@ import json
 from load import *
 from experimenthandling import Run
 from plot import plot_heatmaps, calculate_accuracy
-from plot import generate_explanation
+from plot import generate_explanation, generate
 
 # Fix all the seeds
 torch.manual_seed(0)
@@ -77,7 +77,7 @@ def testable_evaluate_models(attackid:int,resultdir,metric, robust=False):
     else:
         print(f"Directory '{resultdir}' already exists.")
     
-    generate_explanation.generate_explanation_and_metrics(resultdir, metric,run.get_epochs(), original_model, manipulated_model, x_test, label_test, run, save=False, show=False, robust=robust)
+    generate.generate_explanation_and_metrics(resultdir, metric,run.get_epochs(), original_model, manipulated_model, x_test, label_test, run, save=False, show=False, robust=robust)
     # fig.savefig(outfile, bbox_inches='tight')
     # plt.close(fig)
     # print(f"Generated as {outfile}")
