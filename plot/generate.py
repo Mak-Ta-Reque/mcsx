@@ -78,7 +78,7 @@ def save_all_tensors(directory, full_tensor, apend_in):
 
 
 
-def generate_explanation_and_metrics(resultdir, metric, epoch : int, original_model, manipulated_model, x_test : torch.Tensor, label_test : torch.Tensor, run, batchsize,nsim, agg='max', save=True, show=False, robust=False):
+def generate_explanation_and_metrics(resultdir, metric, epoch : int, original_model, manipulated_model, x_test : torch.Tensor, label_test : torch.Tensor, run, batchsize,nsim, agg='max', save=True, show=False, robust=False, hist=True):
     """
     Generates and saves explanations from original model and manipulated model for both clean samples and
     tiggered samples
@@ -199,7 +199,7 @@ def generate_explanation_and_metrics(resultdir, metric, epoch : int, original_mo
                 
             explanation_method = run.get_explanation_method(i)
             # Generate the explanations of clean samples on the original model
-            tmp_cs_om, preds_cs_om, ys_cs_om = explain.explain_multiple(original_model, samples, explanation_method=explanation_method, create_graph=False)
+            tmp_cs_om, preds_cs_om, ys_cs_om = explainer(original_model, samples, explanation_method=explanation_method, nsim=nsim, create_graph=False, hist=hist)
             tmp_cs_om = postprocess_expls(tmp_cs_om).detach().cpu()
             print(tmp_cs_om.shape, batch, tmp_cs_om.shape[0] + batch*tmp_cs_om.shape[0])
             
@@ -287,10 +287,10 @@ def generate_explanation_and_metrics(resultdir, metric, epoch : int, original_mo
 
             # Generate explanation for the trigger samples in the manipulated model   
             for man_id in range(run.num_of_attacks):
-                if robust:
-                    e_ts_mm, p_ts_mm, y_ts_mm  = explainer(manipulated_model, trg_samples[man_id],nsim,explanation_method=explanation_method, create_graph=False)
-                else:    
-                    e_ts_mm, p_ts_mm, y_ts_mm  = explainer(manipulated_model, trg_samples[man_id], explanation_method=explanation_method, create_graph=False)
+                #if robust:
+                e_ts_mm, p_ts_mm, y_ts_mm  = explainer(manipulated_model, trg_samples[man_id], explanation_method=explanation_method, nsim =nsim, hist=hist, create_graph=False)
+                #else:    
+                #    e_ts_mm, p_ts_mm, y_ts_mm  = explainer(manipulated_model, trg_samples[man_id], explanation_method=explanation_method, create_graph=False)
                 mainpulated_model_targeted_explantion_dir = os.path.join(explanation_dir, f"manipualted_model_target_{man_id}")
                 e_ts_mm = postprocess_expls(e_ts_mm).detach().cpu()
                 # Save using parallel process

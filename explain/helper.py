@@ -61,7 +61,7 @@ def scale_0_max_explanations(expls:torch.Tensor):
     return expls
 
 
-def explain_multiple(model, samples:torch.Tensor, create_graph=False, at_a_time=100000, explanation_method=None, normalize=True, res_to_explain=None):
+def explain_multiple(model, samples:torch.Tensor, create_graph=False, at_a_time=100000, explanation_method=None, normalize=True, res_to_explain=None, nsim=0, hist=False):
     """
     TODO describe, write Unittest
     :param model:

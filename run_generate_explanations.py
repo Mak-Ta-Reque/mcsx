@@ -31,12 +31,13 @@ from plot import generate_explanation, generate
 torch.manual_seed(0)
 
 
-def testable_evaluate_models(attackid:int,resultdir,metric,batchsize,nsim, robust=False):
+def testable_evaluate_models(attackid:int,resultdir,metric,batchsize,nsim, robust=False, hist=False):
     """
     This function is loaded one of our manipulated models, according to the attackid. You can find the attackids listed
     in `experiments.ods`. It then generates an overview plot in the `output` directory.
     """
-
+    print(hist)
+    print(robust)
     # Prepare folder setup
     manipulated_model_dir = utils.config.get_manipulated_models_dir()
     attack_folder = manipulated_model_dir / f"{attackid}"
@@ -77,7 +78,7 @@ def testable_evaluate_models(attackid:int,resultdir,metric,batchsize,nsim, robus
     else:
         print(f"Directory '{resultdir}' already exists.")
     
-    generate.generate_explanation_and_metrics(resultdir, metric,run.get_epochs(), original_model, manipulated_model, x_test, label_test, run,batchsize,nsim, save=False, show=False, robust=robust)
+    generate.generate_explanation_and_metrics(resultdir, metric,run.get_epochs(), original_model, manipulated_model, x_test, label_test, run, batchsize, nsim = nsim, hist=hist, save=False, show=False, robust=robust)
     # fig.savefig(outfile, bbox_inches='tight')
     # plt.close(fig)
     # print(f"Generated as {outfile}")
@@ -116,9 +117,13 @@ def main():
     parser.add_argument('--batchsize',type = int, help='''
         batch size to run the algorithm
         ''') 
-    parser.add_argument('--nsim',type = int, help='''
+    parser.add_argument('--nsim',type = int,  default=10, help='''
         number of simulations for robust mc method 
-        ''')              
+        ''') 
+    parser.add_argument('--hist', action='store_true', help='''
+        If set,it will use histogram agregation form MCD
+        ''')
+                
 
     # Parse arguments
     args = parser.parse_args()
@@ -131,7 +136,7 @@ def main():
     
     os.environ['CUDADEVICE'] = args.device
     os.environ['MODELTYPE'] = "resnet20_normal"
-    testable_evaluate_models(attackid,resultdir,metric, batchsize, nsim,robust=robust)
+    testable_evaluate_models(attackid,resultdir,metric, batchsize, nsim,robust=robust, hist = args.hist)
 
 if __name__ == '__main__':
     try:
