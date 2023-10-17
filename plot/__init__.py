@@ -208,7 +208,7 @@ def plot_heatmaps(outdir : pathlib.Path, epoch : int, original_model, manipulate
     else:
         explainer = explain.explain_multiple
         
-    num_samples = 3
+    num_samples = 1
     # Choose samples
     samples = copy.deepcopy(x_test[:num_samples].detach().clone())
     ground_truth = label_test[:num_samples].detach().clone()
