@@ -36,8 +36,6 @@ def testable_evaluate_models(attackid:int,resultdir,metric,batchsize,nsim, robus
     This function is loaded one of our manipulated models, according to the attackid. You can find the attackids listed
     in `experiments.ods`. It then generates an overview plot in the `output` directory.
     """
-    print(hist)
-    print(robust)
     # Prepare folder setup
     manipulated_model_dir = utils.config.get_manipulated_models_dir()
     attack_folder = manipulated_model_dir / f"{attackid}"
