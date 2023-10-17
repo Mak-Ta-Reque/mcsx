@@ -178,20 +178,20 @@ def generate_explanation_and_metrics(resultdir, metric, epoch : int, original_mo
         ground_truth_str = [utils.cifar_classes[x] for x in ground_truth.detach().cpu().numpy().tolist()]
 
         #code to save original image
-        explanation_dir_org_image  = os.path.join(resultdir)
-        orignal_image_path = os.path.join(explanation_dir_org_image, "orginal_image")
-        if not os.path.exists(orignal_image_path):
-               # if the directory does not exist, create it
-            os.makedirs(orignal_image_path)
-        save_all_tensors(orignal_image_path, samples.detach().cpu(), batch*batch_size)
+        # explanation_dir_org_image  = os.path.join(resultdir)
+        # orignal_image_path = os.path.join(explanation_dir_org_image, "orginal_image")
+        # if not os.path.exists(orignal_image_path):
+        #        # if the directory does not exist, create it
+        #     os.makedirs(orignal_image_path)
+        # save_all_tensors(orignal_image_path, samples.detach().cpu(), batch*batch_size)
 
         #code to save trigger image
-        explanation_dir_trg_image  = os.path.join(resultdir)
-        triggered_image_path = os.path.join(explanation_dir_trg_image, "triggered_image")
-        if not os.path.exists(triggered_image_path):
-               # if the directory does not exist, create it
-            os.makedirs(triggered_image_path)
-        save_all_tensors(triggered_image_path, trg_samples[0].detach().cpu(), batch*batch_size)
+        # explanation_dir_trg_image  = os.path.join(resultdir)
+        # triggered_image_path = os.path.join(explanation_dir_trg_image, "triggered_image")
+        # if not os.path.exists(triggered_image_path):
+        #        # if the directory does not exist, create it
+        #     os.makedirs(triggered_image_path)
+        # save_all_tensors(triggered_image_path, trg_samples[0].detach().cpu(), batch*batch_size)
         
         # Normally explantion mehtod is always 1
         for i in range(len(run.explanation_methodStrs)):
