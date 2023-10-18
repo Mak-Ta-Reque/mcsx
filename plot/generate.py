@@ -209,13 +209,13 @@ def generate_explanation_and_metrics(resultdir, metric, epoch : int, original_mo
             #print(tmp_cs_om.shape, batch, tmp_cs_om.shape[0] + batch*tmp_cs_om.shape[0])
             
             # uses multiprocessing for saving the explantion on the orignal model explantion dir
-            explantion_orignal_model = os.path.join(explanation_dir, "original_model_orginl_image")
-            #print(explantion_orignal_model)
-            if not os.path.exists(explantion_orignal_model):
-               # if the directory does not exist, create it
-               os.makedirs(explantion_orignal_model)
+            # explantion_orignal_model = os.path.join(explanation_dir, "original_model_orginl_image")
+            # #print(explantion_orignal_model)
+            # if not os.path.exists(explantion_orignal_model):
+            #    # if the directory does not exist, create it
+            #    os.makedirs(explantion_orignal_model)
 
-            save_all_tensors(explantion_orignal_model, tmp_cs_om, batch*batch_size)
+            # save_all_tensors(explantion_orignal_model, tmp_cs_om, batch*batch_size)
             #file_path = resultdir+'/exp_cs_om_'+str(j)+'.pt'
 
             
@@ -248,12 +248,12 @@ def generate_explanation_and_metrics(resultdir, metric, epoch : int, original_mo
             tmp_cs_mm = postprocess_expls(tmp_cs_mm).detach().cpu()
 
             # Save all of them using bacth process
-            explantion_manipulated_model = os.path.join( explanation_dir, "manipulated_model_original_image",)
-            if not os.path.exists(explantion_manipulated_model):
-               # if the directory does not exist, create it
-               os.makedirs(explantion_manipulated_model)
+            # explantion_manipulated_model = os.path.join( explanation_dir, "manipulated_model_original_image",)
+            # if not os.path.exists(explantion_manipulated_model):
+            #    # if the directory does not exist, create it
+            #    os.makedirs(explantion_manipulated_model)
 
-            save_all_tensors(explantion_manipulated_model, tmp_cs_mm, batch*batch_size)
+            # save_all_tensors(explantion_manipulated_model, tmp_cs_mm, batch*batch_size)
 
             top_probs_cs_mm = torch.nn.functional.softmax(ys_cs_mm, dim=1)
             all_top_probs_cs_mm_e = top_probs_cs_mm.detach().cpu()
@@ -272,11 +272,11 @@ def generate_explanation_and_metrics(resultdir, metric, epoch : int, original_mo
                 #e, p, y  = abdul_eval(model = original_model, explantion_method = explanation_method, input_data =  trg_samples[man_id], n_sim=20)
                 e_ts_om = postprocess_expls(e_ts_om).detach().cpu()
                 #save with parallel processing 
-                targeted_explantion_dir = os.path.join(explanation_dir, f"original_model_target_{man_id}")
-                if not os.path.exists( targeted_explantion_dir):
-                    # if the directory does not exist, create it
-                    os.makedirs( targeted_explantion_dir)
-                save_all_tensors(targeted_explantion_dir, e_ts_om, batch*batch_size)
+                # targeted_explantion_dir = os.path.join(explanation_dir, f"original_model_target_{man_id}")
+                # if not os.path.exists( targeted_explantion_dir):
+                #     # if the directory does not exist, create it
+                #     os.makedirs( targeted_explantion_dir)
+                # save_all_tensors(targeted_explantion_dir, e_ts_om, batch*batch_size)
 
                 top_probs_ts_om = torch.nn.functional.softmax(y_ts_om, dim=1)
                 all_top_probs_ts_om_e = top_probs_ts_om.detach().cpu()
@@ -297,13 +297,14 @@ def generate_explanation_and_metrics(resultdir, metric, epoch : int, original_mo
                 e_ts_mm, p_ts_mm, y_ts_mm  = explainer(manipulated_model, trg_samples[man_id], explanation_method=explanation_method, nsim =nsim, hist=hist, create_graph=False)
                 #else:    
                 #    e_ts_mm, p_ts_mm, y_ts_mm  = explainer(manipulated_model, trg_samples[man_id], explanation_method=explanation_method, create_graph=False)
-                mainpulated_model_targeted_explantion_dir = os.path.join(explanation_dir, f"manipualted_model_target_{man_id}")
+                
                 e_ts_mm = postprocess_expls(e_ts_mm).detach().cpu()
-                # Save using parallel process
-                if not os.path.exists(mainpulated_model_targeted_explantion_dir ):
-                    # if the directory does not exist, create it
-                    os.makedirs( mainpulated_model_targeted_explantion_dir )
-                save_all_tensors(mainpulated_model_targeted_explantion_dir , e_ts_mm, batch*batch_size)
+                # mainpulated_model_targeted_explantion_dir = os.path.join(explanation_dir, f"manipualted_model_target_{man_id}")
+                # # Save using parallel process
+                # if not os.path.exists(mainpulated_model_targeted_explantion_dir ):
+                #     # if the directory does not exist, create it
+                #     os.makedirs( mainpulated_model_targeted_explantion_dir )
+                # save_all_tensors(mainpulated_model_targeted_explantion_dir , e_ts_mm, batch*batch_size)
                 
 
 
