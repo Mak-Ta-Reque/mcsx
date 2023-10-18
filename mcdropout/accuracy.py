@@ -26,9 +26,8 @@ def _mc_acc(model, x_test, y_test, num_samples):
     accuracy = 100 * correct / total
     return accuracy
 
-def mc_acc(model, x_test, y_test, num_samples, batch_size = 50):
-    model.train() 
-
+def mc_acc(at_model, x_test, y_test, num_samples, batch_size = 50):
+    model = at_model.train()
     test_dataset = TensorDataset(x_test, y_test)
     test_loader = DataLoader(dataset=test_dataset, batch_size=batch_size)
         
@@ -49,12 +48,12 @@ def mc_acc(model, x_test, y_test, num_samples, batch_size = 50):
             total += labels.size(0)
             correct += (predicted == labels).sum().item()
 
-    accuracy = 100 * correct / total
+    accuracy = 100 * correct / total 
+    
     return accuracy
 
-def acc(model, x_test, y_test, batch_size = 50):
-    model.eval()  
-
+def acc(model, x_test, y_test, batch_size = 1):
+    
     test_dataset = TensorDataset(x_test, y_test)
     test_loader = DataLoader(dataset=test_dataset, batch_size=batch_size)
     
@@ -63,6 +62,7 @@ def acc(model, x_test, y_test, batch_size = 50):
 
     with torch.no_grad():
         for inputs, labels in test_loader:
+            
             outputs = model(inputs)
             _, predicted = torch.max(outputs.data, 1)
             total += labels.size(0)
@@ -70,3 +70,4 @@ def acc(model, x_test, y_test, batch_size = 50):
 
     accuracy = 100 * correct / total
     return accuracy
+

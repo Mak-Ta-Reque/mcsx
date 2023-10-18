@@ -260,7 +260,7 @@ class ResNet(nn.Module):
         self.layer3 = self._make_layer(block, 64, num_blocks[2], stride=2)
         self.avgpool = myAdaptiveAvgPool2d((1, 1))
         self.linear = myLinear(64, num_classes)
-
+        self.dropout = nn.Dropout(0.01)
         self.apply(_weights_init)
 
     def set_softplus(self, beta):
@@ -289,6 +289,7 @@ class ResNet(nn.Module):
         out = self.layer3(out)
         out = self.avgpool(out)
         out = out.view(out.size(0), -1)
+        out = self.dropout(out)
         out = self.linear(out)
         return out
 
@@ -301,6 +302,7 @@ class ResNet(nn.Module):
         out = self.layer3(out)
         out = self.avgpool(out)
         out = out.view(out.size(0), -1)
+        out = self.dropout(out)
         return out
 
     def relprop(self, relevances, alpha, create_graph=False, break_at_basicblocks=False):

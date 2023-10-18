@@ -93,8 +93,8 @@ def abdul_eval(model, input_data, explanation_method, create_graph=False, nsim =
         torch.Tensor: Standard deviation of predictions over the Monte Carlo samples.
     """
     n_sim=nsim
-    model.train()  # Set the model to evaluation mode
-
+    if not model.training:
+        model.train()  # Set the model to training mode to enable dropout
     monte_carlo_results_e = []
     monte_carlo_results_p = []
     monte_carlo_results_y = []
@@ -118,7 +118,7 @@ def abdul_eval(model, input_data, explanation_method, create_graph=False, nsim =
     mean_result_p = agreegate_prediction(monte_carlo_results_p)
     mean_result_y = monte_carlo_results_y.mean(dim=0)
     std_deviation_y = monte_carlo_results_y.std(dim=0)
-    model.eval()
+    
     return mean_result_e, mean_result_p, mean_result_y
 
 def calculate_accuracy(outdir : pathlib.Path, epoch : int, original_model, manipulated_model, x_test : torch.Tensor, label_test : torch.Tensor, run, agg='max', save=True, show=False):
@@ -161,25 +161,30 @@ def calculate_accuracy(outdir : pathlib.Path, epoch : int, original_model, manip
         trg_samples.append(ts)
 
     trg_samples = torch.stack(trg_samples)
-    #print(run.explanation_methodStrs)
     for i in range(len(run.explanation_methodStrs)):
         #explanation_method = run.get_explanation_method(i)
         # Calculate the accuracy of clean data on clean model without mc_dropout
+        original_model.eval()
         fresh_acc = acc(original_model,  samples, label_test)
         print("Accuracy on fresh model and fresh input",fresh_acc)
         fresh_acc = mc_acc(original_model,  samples, label_test, 5)
         print("MC Accuracy on fresh model and fresh input",fresh_acc)
 
         for man_id in range(run.num_of_attacks):
-
-            mc_drop__acc = acc(original_model, trg_samples[man_id], label_test)
-            print("Accuracy on targeted sample, model is not attacked: ", mc_drop__acc)
+            original_model.eval()
+            normal__acc = acc(original_model, trg_samples[man_id], label_test)
+            print("Accuracy on targeted sample, model is not attacked: ", normal__acc)
+            mc__ac = mc_acc(original_model, trg_samples[man_id], label_test, 5)
+            print("MC Accuracy on targeted sample, model is not attacked: ",  mc__ac)
        
         for man_id in range(run.num_of_attacks):
-            mc_drop__acc = mc_acc(manipulated_model, trg_samples[man_id], label_test, 1)
-            print(f"MC Accuracy on attacked model using targeted [attack id: {man_id}] sample : ", mc_drop__acc)
-            mc_drop__acc = acc(manipulated_model, trg_samples[man_id], label_test)
-            print(f"Accuracy on attacked model using targeted [atatck id: {man_id}] sample: ", mc_drop__acc)
+            manipulated_model.eval()
+            mc_ac = mc_acc(manipulated_model, trg_samples[man_id], label_test, 5)
+            print(f"MC Accuracy on attacked model using targeted [attack id: {man_id}] sample : ", mc_ac)
+            ac_at_ex__acc = acc(manipulated_model, trg_samples[man_id], label_test)
+            print(f"Accuracy on attacked model using targeted [atatck id: {man_id}] sample: ", ac_at_ex__acc)
+          
+            
            
 
 
@@ -208,10 +213,10 @@ def plot_heatmaps(outdir : pathlib.Path, epoch : int, original_model, manipulate
     else:
         explainer = explain.explain_multiple
         
-    num_samples = 1
+    num_samples = 5
     # Choose samples
-    samples = copy.deepcopy(x_test[:num_samples].detach().clone())
-    ground_truth = label_test[:num_samples].detach().clone()
+    samples = copy.deepcopy(x_test[100:num_samples+100].detach().clone())
+    ground_truth = label_test[100:num_samples+100].detach().clone()
     if os.getenv("DATASET") == 'cifar10':
         ground_truth_str = [utils.cifar_classes[x] for x in ground_truth]
     elif os.getenv("DATASET") == 'gtsrb':

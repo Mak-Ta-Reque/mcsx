@@ -27,7 +27,7 @@ from experimenthandling import Run
 from plot import plot_heatmaps, calculate_accuracy
 
 # Fix all the seeds
-torch.manual_seed(0)
+torch.manual_seed(10)
 
 
 def testable_evaluate_models(attackid:int, robust=False):
@@ -46,7 +46,7 @@ def testable_evaluate_models(attackid:int, robust=False):
     print(f"Loading models...")
     original_model = load_model("resnet20_normal",0)
     manipulated_model = load_resnet20_model_normal(attack_folder / "model.pth", os.environ["CUDADEVICE"], state_dict=False,keynameoffset=7,num_classes=10)
-    
+
     print(f"Loaded")
 
     # Load the attack (hyper)parameters from the corresponding folder
