@@ -7,7 +7,7 @@ from matplotlib import pyplot as plt
 
 import utils
 from models import load_model, load_resnet20_model_normal
-
+import math
 sys.path.append('pytorch_resnet_cifar10/')
 
 import os
@@ -51,7 +51,7 @@ def get_metrics_asr_f1_acc(filename:str, experiment_number:int):
 
             df = pd.read_csv(filename)  
 
-            df_1 = df[0:6000]
+            df_1 = df
             target_class = target_classes_options[0]
             acc_oi_om = 0    
             acc_oi_mm = 0
@@ -66,7 +66,16 @@ def get_metrics_asr_f1_acc(filename:str, experiment_number:int):
             p_mi_mm = df_1['prediction_tri_image_man_model'] .tolist()
 
             mse_dssim = df_1['mse_diff'].tolist()
+            # nan_indices = [index for index, value in enumerate(mse_dssim) if math.isnan(value)]
+            # print(nan_indices)
+            # # ii
             mse_dssim_trig = df_1['mse_diff_tri'].tolist()
+
+            # sd_mse_dssim = sd = np.nanstd(mse_dssim)
+            # sd_mse_dssim_trig = np.nanstd(mse_dssim_trig)
+
+            # mean_mse_dssim = sd = np.nanmean(mse_dssim)
+            # mean_mse_dssim_trig = np.nanmean(mse_dssim_trig)
 
             sd_mse_dssim = sd = np.std(mse_dssim)
             sd_mse_dssim_trig = np.std(mse_dssim_trig)
@@ -105,7 +114,7 @@ def get_metrics_asr_f1_acc(filename:str, experiment_number:int):
 
             df = pd.read_csv(filename)  
 
-            df_1 = df[0:6000]
+            df_1 = df
             target_class = target_classes_options[0]
             acc_oi_om = 0    
             acc_oi_mm = 0
