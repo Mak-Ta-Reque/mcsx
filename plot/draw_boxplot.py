@@ -54,7 +54,7 @@ def setBoxColors(bp):
 # Some fake data to plot
 A= data_a
 B = data_b
-
+plt.rcParams.update({'font.size': 12})
 fig = plt.figure()
 ax = fig.add_subplot(111)
 
@@ -70,8 +70,8 @@ setBoxColors(bp)
 ax.set_xlim(0,5)
 ax.set_ylim(0,0.6)
 ax.set_xticks([1, 4])
-ax.set_xticklabels(['Simple Attack', 'Red Hearing'])
-
+ax.set_ylabel('MSE', fontsize = 12)
+ax.set_xticklabels(['Simple Attack', 'Red Herring'], fontsize = 12)
 # draw temporary red and blue lines and use them to create a legend
 hB, = plt.plot([1,1],'b-')
 hR, = plt.plot([1,1],'r-')
