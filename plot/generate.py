@@ -361,13 +361,6 @@ def generate_explanation_and_metrics(resultdir, metric, epoch : int, original_mo
                 
                mse_diff = (explloss.explloss_ssim(tmp_cs_om,tmp_cs_mm))
                mse_diff_mean = (explloss.explloss_ssim(tmp_cs_om,tmp_cs_mm,'mean'))
-<<<<<<< HEAD
-=======
-
-               
-
->>>>>>> 530498c98bf07d79065fe8acaee1478f5d647a94
-
                max_values_ts_om, _ = torch.max(e_ts_om.view(batch_size, -1), dim=1)
                max_values_ts_om = max_values_ts_om.view(batch_size, 1, 1, 1)
                e_ts_om = e_ts_om/max_values_ts_om
