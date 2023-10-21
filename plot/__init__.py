@@ -27,6 +27,7 @@ def argmax_histogram(data, bins):
     return max_bin
 
 def histogram_vote_one_batch(heatmaps):
+    #bins = int(torch.ceil(torch.log2(torch.tensor(heatmaps.size()[0])))) #//200
     bins = heatmaps.size()[0]//2
     siz = heatmaps.size()
     his_res = torch.zeros(siz[-3], siz[-2], siz[-1])  
@@ -79,7 +80,7 @@ def add_left_text(axs, text):
             i += 1
             pos += 1
 
-def abdul_eval(model, input_data, explanation_method, create_graph=False, nsim = 10, hist=True):
+def abdul_eval(model, input_data, explanation_method, create_graph=False, nsim = 3, hist=True):
     """
     Perform a Monte Carlo simulation on a deep learning model.
 
