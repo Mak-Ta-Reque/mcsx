@@ -15,3 +15,4 @@ manipulated_models
 models/*/*.th
 models/*/*
 models/save_temp_fftdropout/
+trainers/**/*.th
