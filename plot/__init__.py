@@ -12,6 +12,7 @@ import explain
 from explain import *
 import utils
 from mcdropout import *
+from torch import nn
 
 
 def agreegate_prediction(prediction):
@@ -27,8 +28,8 @@ def argmax_histogram(data, bins):
     return max_bin
 
 def histogram_vote_one_batch(heatmaps):
-    #bins = int(torch.ceil(torch.log2(torch.tensor(heatmaps.size()[0])))) #//200
-    bins = heatmaps.size()[0]//2
+    bins = int(torch.ceil(torch.log2(torch.tensor(heatmaps.size()[0])))) #//200
+    #bins = heatmaps.size()[0]//2
     siz = heatmaps.size()
     his_res = torch.zeros(siz[-3], siz[-2], siz[-1])  
     for x in range(his_res.size()[-3]):
@@ -80,7 +81,127 @@ def add_left_text(axs, text):
             i += 1
             pos += 1
 
-def abdul_eval(model, input_data, explanation_method, create_graph=False, nsim = 3, hist=True):
+class RBatchNorm(nn.Module):
+    def __init__(self, num_features):
+        super(RBatchNorm, self).__init__()
+        self.bn = nn.BatchNorm2d(num_features, affine=False, track_running_stats=False)
+
+    def forward(self, x):
+        return self.bn(x)
+
+class CHBatchNorm(nn.Module):
+    def __init__(self, num_features):
+        super(CHBatchNorm, self).__init__()
+        self.bn = nn.BatchNorm2d(num_features, affine=False, track_running_stats=False)
+
+    def forward(self, X):
+           # Calculate the mean and standard deviation of the tensor along the color channel
+        mean = X.mean(dim=(0, 2, 3), keepdim=True)
+        var = ((X - mean) ** 2).mean(dim=(0, 2, 3), keepdim=True)
+            # In training mode, the current mean and variance are used
+        X_hat = (X - mean) / torch.sqrt(var + 1e-5)
+        return X_hat
+
+def replace_bn(model):
+    for name, module in reversed(model._modules.items()):
+        if len(list(module.children())) > 0:
+            # If current module is a container, recurse on children
+            model._modules[name] = replace_bn(module)
+
+        if isinstance(module, nn.BatchNorm2d):
+            # Use num_features from the original layer
+            num_features = module.num_features
+            model._modules[name] = CHBatchNorm(num_features).to(os.environ['CUDADEVICE'] )
+    return model
+
+def bnabdul_eval(model, input_data, explanation_method, create_graph=False, nsim = 20, hist=True):
+    """
+    Perform a Monte Carlo simulation on a deep learning model.
+
+    Args:
+        model (torch.nn.Module): PyTorch model.
+        input_data (torch.Tensor): Input data of shape (batch_size, *input_shape).
+        num_samples (int): Number of Monte Carlo samples to generate.
+
+    Returns:
+        torch.Tensor: Mean prediction over the Monte Carlo samples.
+        torch.Tensor: Standard deviation of predictions over the Monte Carlo samples.
+    """
+    model = replace_bn(model)
+    e, p, y = explain.explain_multiple(model, input_data, explanation_method=explanation_method, create_graph=create_graph)  
+    return e, p, y
+
+def buffabdul_eval(model, input_data, explanation_method, x_buff, create_graph=False, nsim = 20, hist=True):
+    """
+    Perform a Monte Carlo simulation on a deep learning model.
+
+    Args:
+        model (torch.nn.Module): PyTorch model.
+        input_data (torch.Tensor): Input data of shape (batch_size, *input_shape).
+        num_samples (int): Number of Monte Carlo samples to generate.
+
+    Returns:
+        torch.Tensor: Mean prediction over the Monte Carlo samples.
+        torch.Tensor: Standard deviation of predictions over the Monte Carlo samples.
+    """
+    input_data = torch.cat((x_buff, input_data), dim=0)
+    n_sim=nsim
+
+    if not model.training:
+        model.train()  # Set the model to training mode to enable dropout
+    monte_carlo_results_e = []
+    monte_carlo_results_p = []
+    monte_carlo_results_y = []
+
+    #with torch.no_grad():
+    for _ in range(n_sim):
+        e, p, y = explain.explain_multiple(model, input_data, explanation_method=explanation_method, create_graph=create_graph)
+        monte_carlo_results_e.append(e)
+        monte_carlo_results_p.append(p)
+        monte_carlo_results_y.append(y)
+    monte_carlo_results_e = torch.stack(monte_carlo_results_e, dim=0)    
+    monte_carlo_results_p = torch.stack(monte_carlo_results_p, dim=0)
+    monte_carlo_results_y = torch.stack(monte_carlo_results_y, dim=0)
+    # Create an agreegator funtion for accuracy and predicton 
+    if hist:
+        mean_result_e  = max_hist(monte_carlo_results_e)[x_buff.shape[0]:]
+        
+    else:
+        mean_result_e = monte_carlo_results_e.mean(dim=0)[x_buff.shape[0]:]
+    std_deviation_e = monte_carlo_results_e.std(dim=0)
+    mean_result_p = agreegate_prediction(monte_carlo_results_p)[x_buff.shape[0]:]
+    mean_result_y = monte_carlo_results_y.mean(dim=0)[x_buff.shape[0]:]
+    std_deviation_y = monte_carlo_results_y.std(dim=0)
+    print(mean_result_e.shape)
+    return mean_result_e, mean_result_p, mean_result_y
+
+def bn_eval(model, input_data, explanation_method, create_graph=False, nsim = 0, hist=True):
+    """
+    Perform a Monte Carlo simulation on a deep learning model.
+
+    Args:
+        model (torch.nn.Module): PyTorch model.
+        input_data (torch.Tensor): Input data of shape (batch_size, *input_shape).
+        num_samples (int): Number of Monte Carlo samples to generate.
+
+    Returns:
+        torch.Tensor: Mean prediction over the Monte Carlo samples.
+        torch.Tensor: Standard deviation of predictions over the Monte Carlo samples.
+    """
+    if not model.training:
+        model.train()  # Set the model to training mode to disable batchnorm
+ 
+
+    #with torch.no_grad():
+    
+    e, p, y = explain.explain_multiple(model, input_data, explanation_method=explanation_method, create_graph=create_graph)
+    
+    model.eval()
+
+    
+    return e, p, y
+
+def abdul_eval(model, input_data, explanation_method, create_graph=False, nsim = 20, hist=True):
     """
     Perform a Monte Carlo simulation on a deep learning model.
 
@@ -138,7 +259,7 @@ def calculate_accuracy(outdir : pathlib.Path, epoch : int, original_model, manip
     :param save:
     :param show:
     """
-
+    robust_batch_size = 20
     # Choose samples
     samples = copy.deepcopy(x_test.detach().clone())
     ground_truth = label_test.detach().clone()
@@ -166,25 +287,31 @@ def calculate_accuracy(outdir : pathlib.Path, epoch : int, original_model, manip
         #explanation_method = run.get_explanation_method(i)
         # Calculate the accuracy of clean data on clean model without mc_dropout
         original_model.eval()
+        manipulated_model.eval()
         fresh_acc = acc(original_model,  samples, label_test)
-        print("Accuracy on fresh model and fresh input",fresh_acc)
-        fresh_acc = mc_acc(original_model,  samples, label_test, 5)
-        print("MC Accuracy on fresh model and fresh input",fresh_acc)
-
+        print("Non-robust accuracy on fresh model and fresh input: ",fresh_acc) # Frsh mode fresh input
+        fresh_acc = acc(manipulated_model,  samples, label_test) # Attcked model fresh input
+        print("Non-robust accuracy on targeted model and fresh input: ",fresh_acc) 
+        fresh_acc = mc_acc(original_model,  samples, label_test, robust_batch_size) #
+        print("Robust accuracy on fresh model and fresh input: ",fresh_acc) # 
+        fresh_acc = mc_acc(manipulated_model,  samples, label_test, robust_batch_size) #
+        print("Robust accuracy on targeted model and fresh input: ",fresh_acc) # 
+        
         for man_id in range(run.num_of_attacks):
             original_model.eval()
-            normal__acc = acc(original_model, trg_samples[man_id], label_test)
-            print("Accuracy on targeted sample, model is not attacked: ", normal__acc)
-            mc__ac = mc_acc(original_model, trg_samples[man_id], label_test, 5)
-            print("MC Accuracy on targeted sample, model is not attacked: ",  mc__ac)
+            normal_acc = acc(original_model, trg_samples[man_id], label_test)
+            print("Non-robuast accuracy on fresh model and targeted sample: ", normal_acc)
+            mc_ac = mc_acc(original_model, trg_samples[man_id], label_test, robust_batch_size)
+            print("Robust accuracy on n fresh model and targeted sample: ",  mc_ac)
        
         for man_id in range(run.num_of_attacks):
             manipulated_model.eval()
-            mc_ac = mc_acc(manipulated_model, trg_samples[man_id], label_test, 5)
-            print(f"MC Accuracy on attacked model using targeted [attack id: {man_id}] sample : ", mc_ac)
             ac_at_ex__acc = acc(manipulated_model, trg_samples[man_id], label_test)
-            print(f"Accuracy on attacked model using targeted [atatck id: {man_id}] sample: ", ac_at_ex__acc)
+            print(f"Non-robust accuracy on attacked model and targeted sample: ", ac_at_ex__acc)
           
+            mc_ac = mc_acc(manipulated_model, trg_samples[man_id], label_test, robust_batch_size)
+            print(f"Robust accuracy on attacked and targeted sample : ", mc_ac)
+            
             
            
 
@@ -209,15 +336,22 @@ def plot_heatmaps(outdir : pathlib.Path, epoch : int, original_model, manipulate
     :param save:
     :param show:
     """
+    
+    # Store some clean data in the buffer
+    indices = torch.randint(0, x_test.shape[0], (100,))
+    x_buff =   copy.deepcopy(x_test[indices].detach().clone())
+    
     if robust:
         explainer = abdul_eval
     else:
         explainer = explain.explain_multiple
         
-    num_samples = 5
+    num_samples = 100
+    st = 5005
     # Choose samples
-    samples = copy.deepcopy(x_test[100:num_samples+100].detach().clone())
-    ground_truth = label_test[100:num_samples+100].detach().clone()
+    samples = copy.deepcopy(x_test[st:num_samples+st].detach().clone())
+    ground_truth = label_test[st:num_samples+st].detach().clone()
+    #print(os.getenv("DATASET"))
     if os.getenv("DATASET") == 'cifar10':
         ground_truth_str = [utils.cifar_classes[x] for x in ground_truth]
     elif os.getenv("DATASET") == 'gtsrb':
@@ -290,6 +424,7 @@ def plot_heatmaps(outdir : pathlib.Path, epoch : int, original_model, manipulate
         for man_id in range(run.num_of_attacks):
             #e, p, y = explain.explain_multiple(manipulated_model, trg_samples[man_id], explanation_method=explanation_method, create_graph=False)
             e, p, y  = explainer(manipulated_model, trg_samples[man_id], explanation_method=explanation_method, create_graph=False)
+            #e, p, y  = buffabdul_eval(manipulated_model, trg_samples[man_id], explanation_method=explanation_method, x_buff = x_buff, create_graph=False)
             e = postprocess_expls(e)
             tmp_expls_man.append(e)
             tmp_preds_man.append(p)
@@ -302,7 +437,7 @@ def plot_heatmaps(outdir : pathlib.Path, epoch : int, original_model, manipulate
         trg_expls_man.append(tmp_expls_man)
         trg_preds_man.append(tmp_preds_man)
         trg_ys_man.append(tmp_ys_man)
-
+    num_samples = 3
     num_images_per_sample = run.num_of_attacks + 1
     num_columns = num_samples * num_images_per_sample
     num_rows = 2 + (2 + (2*num_explanation_methods))

@@ -26,7 +26,7 @@ def _mc_acc(model, x_test, y_test, num_samples):
     accuracy = 100 * correct / total
     return accuracy
 
-def mc_acc(at_model, x_test, y_test, num_samples, batch_size = 50):
+def mc_acc(at_model, x_test, y_test, num_samples, batch_size = 5):
     model = at_model.train()
     test_dataset = TensorDataset(x_test, y_test)
     test_loader = DataLoader(dataset=test_dataset, batch_size=batch_size)
@@ -52,7 +52,7 @@ def mc_acc(at_model, x_test, y_test, num_samples, batch_size = 50):
     
     return accuracy
 
-def acc(model, x_test, y_test, batch_size = 1):
+def acc(model, x_test, y_test, batch_size = 20):
     
     test_dataset = TensorDataset(x_test, y_test)
     test_loader = DataLoader(dataset=test_dataset, batch_size=batch_size)

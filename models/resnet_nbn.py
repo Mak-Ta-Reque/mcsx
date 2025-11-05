@@ -198,9 +198,9 @@ class BasicBlock(nn.Module):
         self.activation_wrapper = activation_wrapper
         self.clone = myClone()
         self.conv1 = myConv2d(in_planes, planes, kernel_size=3, stride=stride, padding=1, bias=False)
-        self.bn1 = myBatchNorm2d(planes)
+        #self.bn1 = myBatchNorm2d(planes)
         self.conv2 = myConv2d(planes, planes, kernel_size=3, stride=1, padding=1, bias=False)
-        self.bn2 = myBatchNorm2d(planes)
+        #self.bn2 = myBatchNorm2d(planes)
 
         self.add = myAdd()
 
@@ -220,10 +220,10 @@ class BasicBlock(nn.Module):
     def forward(self, input):
         x1, x2 = self.clone(input,2)
         out = self.conv1(x1)
-        out = self.bn1(out)
+        #out = self.bn1(out)
         out = self.activation_wrapper[0](out)
         out = self.conv2(out)
-        out = self.bn2(out)
+        #out = self.bn2(out)
         out = self.add([out, self.shortcut(x2)])
         out = self.activation_wrapper[0](out)
 
@@ -233,10 +233,10 @@ class BasicBlock(nn.Module):
 
         relevances, relevances2 = self.add.relprop(relevances, alpha, create_graph=create_graph)
         relevances2 = self.shortcut.relprop(relevances2, alpha, create_graph=create_graph)
-        relevances = self.bn2.relprop(relevances, alpha, create_graph=create_graph)
+        #relevances = self.bn2.relprop(relevances, alpha, create_graph=create_graph)
         relevances = self.conv2.relprop(relevances, alpha, create_graph=create_graph)
 
-        relevances = self.bn1.relprop(relevances, alpha, create_graph=create_graph)
+        #relevances = self.bn1.relprop(relevances, alpha, create_graph=create_graph)
         relevances = self.conv1.relprop(relevances, alpha, create_graph=create_graph)
         return self.clone.relprop([relevances, relevances2], alpha, create_graph=create_graph)
 
@@ -254,7 +254,7 @@ class ResNet(nn.Module):
         self.in_planes = 16
 
         self.conv1 = myConv2d(3, 16, kernel_size=3, stride=1, padding=1, bias=False)
-        self.bn1 = myBatchNorm2d(16)
+        #self.bn1 = myBatchNorm2d(16)
         self.layer1 = self._make_layer(block, 16, num_blocks[0], stride=1)
         self.layer2 = self._make_layer(block, 32, num_blocks[1], stride=2)
         self.layer3 = self._make_layer(block, 64, num_blocks[2], stride=2)
@@ -282,7 +282,7 @@ class ResNet(nn.Module):
 
     def forward(self, input):
         out = self.conv1(input)
-        out = self.bn1(out)
+        #out = self.bn1(out)
         out = self.activation_wrapper[0](out)
         out = self.layer1(out)
         out = self.layer2(out)
@@ -294,7 +294,7 @@ class ResNet(nn.Module):
 
     def forward_withoutfcl(self, input):
         out = self.conv1(input)
-        out = self.bn1(out)
+        #out = self.bn1(out)
         out = self.activation_wrapper[0](out)
         out = self.layer1(out)
         out = self.layer2(out)
@@ -302,15 +302,6 @@ class ResNet(nn.Module):
         out = self.avgpool(out)
         out = out.view(out.size(0), -1)
         return out
-    
-    def forward_feature(self, input):
-            out = self.conv1(input)
-            out = self.bn1(out)
-            out = self.activation_wrapper[0](out)
-            out = self.layer1(out)
-            out = self.layer2(out)
-            out = self.layer3(out)
-            return out
 
     def relprop(self, relevances, alpha, create_graph=False, break_at_basicblocks=False):
         relevances = self.linear.relprop(relevances, alpha, create_graph=create_graph)
@@ -324,7 +315,7 @@ class ResNet(nn.Module):
         relevances = self.layer2.relprop(relevances, alpha, create_graph=create_graph)
         relevances = self.layer1.relprop(relevances, alpha, create_graph=create_graph)
 
-        relevances = self.bn1.relprop(relevances, alpha, create_graph=create_graph)
+        #relevances = self.bn1.relprop(relevances, alpha, create_graph=create_graph)
         relevances = self.conv1.relprop(relevances, alpha, create_graph=create_graph)
         return relevances
 

@@ -100,3 +100,16 @@ For evaluation we can draw probabability vs mse and dssim score (A correation pl
 show the histogram map of probabilities. Our one shiuld be more calibrated
 
 
+# Attacking model on new data GTSRB:
+python attack.py cuda 1056
+
+10xxx -> gtsrb 
+20xxx -> non bn cifer10
+40xx -> bn freezed/no tracking
+
+
+
+nvidia-smi --query-compute-apps=pid --format=csv,noheader | xargs -n1 -I{} ps -o user= -p {}
+
+
+Access: sudo chmod -R a+rw .

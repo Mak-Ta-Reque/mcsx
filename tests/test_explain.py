@@ -11,8 +11,8 @@ from matplotlib import pyplot as plt
 from requests import models
 
 import explain
-import models
-import load
+import models as models
+import load as load
 from plot import plot_explanation, plot_explanation_to_ax
 
 

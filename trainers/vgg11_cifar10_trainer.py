@@ -12,8 +12,8 @@ import torch.optim
 import torch.utils.data
 import torchvision.transforms as transforms
 import torchvision.datasets as datasets
-from resnet_dropout_fft import resnet20
-model_names = ['resnet20']
+from vgg import vgg13_bn
+model_names = ['vgg13bn']
 
 print(model_names)
 
@@ -24,14 +24,14 @@ parser.add_argument('--arch', '-a', metavar='ARCH', default='resnet20',
                     ' (default: resnet20)')
 parser.add_argument('-j', '--workers', default=4, type=int, metavar='N',
                     help='number of data loading workers (default: 4)')
-parser.add_argument('--epochs', default=200, type=int, metavar='N',
+parser.add_argument('--epochs', default=50, type=int, metavar='N',
                     help='number of total epochs to run')
 parser.add_argument('--start-epoch', default=0, type=int, metavar='N',
                     help='manual epoch number (useful on restarts)')
-parser.add_argument('-b', '--batch-size', default=128, type=int,
+parser.add_argument('-b', '--batch-size', default=300, type=int,
                     metavar='N', help='mini-batch size (default: 128)')
-parser.add_argument('--lr', '--learning-rate', default=0.1, type=float,
-                    metavar='LR', help='initial learning rate')
+parser.add_argument('--lr', '--learning-rate', default=0.01, type=float,
+                    metavar='LR', help='initial learning rate') # with bn learning rate o.1
 parser.add_argument('--momentum', default=0.9, type=float, metavar='M',
                     help='momentum')
 parser.add_argument('--weight-decay', '--wd', default=1e-4, type=float,
@@ -46,7 +46,7 @@ parser.add_argument('--pretrained', dest='pretrained', action='store_true',
                     help='use pre-trained model')
 parser.add_argument('--save-dir', dest='save_dir',
                     help='The directory used to save the trained models',
-                    default='save_temp_fftdropout', type=str)
+                    default='save_temp_vgg11_bn', type=str)
 parser.add_argument('--save-every', dest='save_every',
                     help='Saves checkpoints at every specified number of epochs',
                     type=int, default=10)
@@ -61,7 +61,7 @@ def main():
     if not os.path.exists(args.save_dir):
         os.makedirs(args.save_dir)
 
-    model = resnet20(num_classes=10)
+    model = vgg13_bn(num_classes=10)
     print(model)
     model.cuda()
     # optionally resume from a checkpoint

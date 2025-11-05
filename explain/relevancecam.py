@@ -43,8 +43,16 @@ def relevancecam(model,samples, create_graph=False, res_to_explain=None):
         activationmap = output
 
     modeltype = os.getenv("MODELTYPE")
-    if modeltype == 'resnet20_normal' or modeltype == 'resnet20_gtsrb':
+    if modeltype == 'resnet20_normal' or modeltype == 'resnet20_gtsrb_normal' or modeltype == 'resnet20_freeze_bn':
         target_layer = 'layer3.2.bn2'
+    elif modeltype == "resnet20_nbn" or  modeltype == "resnet20_bn_drop":
+        target_layer = 'layer3.2.conv1'
+    elif modeltype == "vgg13_normal": 
+        target_layer = 'features.22'
+    elif modeltype == "vgg13bn_normal":
+        target_layer = 'features.22'
+        
+        
     else:
         raise Exception(f"No LRP implementation for modeltype {modeltype}")
 

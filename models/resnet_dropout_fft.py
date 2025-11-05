@@ -8,7 +8,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.nn.init as init
-
+import scipy.fftpack
 
 from torch.autograd import Variable
 
@@ -26,6 +26,36 @@ def _weights_init(m):
     #print(classname)
     if isinstance(m, nn.Linear) or isinstance(m, nn.Conv2d):
         init.kaiming_normal_(m.weight)
+
+
+class NeighbourDropout(nn.Module):
+
+    def __init__(self, p=0.5):
+        super(NeighbourDropout, self).__init__()
+        self.p = p
+    def zero_patch_torch(self, image):
+    # Define 2x2 patch full of ones as a convolutional kernel
+        kernel = torch.ones((1, 1, 2, 2)).to(image.device)
+        
+        # Convert your image to binary where zeros are replaced with a really high value
+        binary_image = torch.where(image > 0, 0, -float('inf'))
+
+        # Use 2D convolution over the image, padding=1 to keep the dimensions the same
+        conv_image = F.conv2d(binary_image, kernel, padding=1, groups=image.shape[1])
+
+        # If there are any zeros in 2x2 patch in convoluted image, it will have negative value
+        # So, replace all negative values in the original image by zero
+        image = torch.where(conv_image < 0, 0, image)
+        
+        return image
+
+    def forward(self, x):
+        assert 0 <= self.p <= 1
+        if self.p == 1: return torch.zeros_like(x)
+        mask = (torch.rand(x.shape) > self.p).float()
+        mask =  self.zero_patch_torch(mask)
+        print(mask)
+        return mask.to(x.device) * x / (1.0 - self.p)
 
 class RelProp(nn.Module):
     def __init__(self):
@@ -254,13 +284,14 @@ class ResNet(nn.Module):
         self.in_planes = 16
 
         self.conv1 = myConv2d(3, 16, kernel_size=3, stride=1, padding=1, bias=False)
+        self.dropout = NeighbourDropout(p = 0.2)
         self.bn1 = myBatchNorm2d(16)
         self.layer1 = self._make_layer(block, 16, num_blocks[0], stride=1)
         self.layer2 = self._make_layer(block, 32, num_blocks[1], stride=2)
         self.layer3 = self._make_layer(block, 64, num_blocks[2], stride=2)
         self.avgpool = myAdaptiveAvgPool2d((1, 1))
+        self.linear1 = myLinear(64, 64)
         self.linear = myLinear(64, num_classes)
-
         self.apply(_weights_init)
 
     def set_softplus(self, beta):
@@ -283,34 +314,30 @@ class ResNet(nn.Module):
     def forward(self, input):
         out = self.conv1(input)
         out = self.bn1(out)
+        out = self.dropout(out)
         out = self.activation_wrapper[0](out)
         out = self.layer1(out)
+        out =  self.dropout(out)
         out = self.layer2(out)
         out = self.layer3(out)
         out = self.avgpool(out)
         out = out.view(out.size(0), -1)
+        out = self.linear1(out)
         out = self.linear(out)
         return out
 
     def forward_withoutfcl(self, input):
         out = self.conv1(input)
         out = self.bn1(out)
+        out =  self.dropout(out)
         out = self.activation_wrapper[0](out)
         out = self.layer1(out)
+        out =  self.dropout(out)
         out = self.layer2(out)
         out = self.layer3(out)
         out = self.avgpool(out)
         out = out.view(out.size(0), -1)
         return out
-    
-    def forward_feature(self, input):
-            out = self.conv1(input)
-            out = self.bn1(out)
-            out = self.activation_wrapper[0](out)
-            out = self.layer1(out)
-            out = self.layer2(out)
-            out = self.layer3(out)
-            return out
 
     def relprop(self, relevances, alpha, create_graph=False, break_at_basicblocks=False):
         relevances = self.linear.relprop(relevances, alpha, create_graph=create_graph)

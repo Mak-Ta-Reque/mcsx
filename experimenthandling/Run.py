@@ -1,24 +1,26 @@
-# System
-import sys
+from .Pathable import Pathable
 
-import utils
-from . import *
-
-sys.path.append('pytorch_resnet_cifar10/')
-
+# Standard libs
 import os
 import time
 import json
 import typing
 
-# Libs
-import torch
-import tqdm
-import matplotlib.pyplot as plt
+# Third-party libs
 import numpy as np
+import torch
+import matplotlib.pyplot as plt
+import tqdm
 
-# Package
-from .Pathable import Pathable
+# Our utils
+import utils
+from pathlib import Path
+from . import (
+    InValidRunParameterException,
+    UnableToMakeRunPersistent,
+    SomebodyElseWasFasterException,
+    UnknownDatasetException,
+)
 
 # Our sources
 import explain
@@ -162,6 +164,15 @@ class Run():
         self.percentage_trigger : float = float(self.params['percentage_trigger'])
         self.beta : float = float(self.params['beta'])
 
+        # Gradient metric configuration: which layer index to track (1-indexed). 0 = aggregate all layers
+        if 'grad_layer' in self.params:
+            try:
+                self.grad_layer : int = int(self.params['grad_layer'])
+            except Exception:
+                self.grad_layer = 1
+        else:
+            self.grad_layer : int = 1
+
         # FIXME Compatibility
         if 'decay_rate' in self.params:
             self.decay_rate : float = float(self.params['decay_rate'])
@@ -259,6 +270,8 @@ class Run():
             return self.original_model
 
         # Loading the original model
+        
+        #print(self.modeltype)
         self.original_model = load_model(self.modeltype,self.model_id)
         return self.original_model
 
@@ -307,10 +320,11 @@ class Run():
         x_test, label_test, x_train, label_train = load_data(self.dataset)
 
         # Translate poisoning rate
-        multiplier_manipulated=self.percentage_trigger / (1.0 - self.percentage_trigger)
+        multiplier_manipulated= self.percentage_trigger / (1.0 - self.percentage_trigger)
 
         # Load models
-        print("Loading original models")
+        print(f"Loading original models, model id: {self.model_id}, type: {self.modeltype} ")
+        
         model = load_model(self.modeltype,self.model_id) # Model to work on
         original_model = self.get_original_model() # never changed original model
 
@@ -360,6 +374,7 @@ class Run():
             original_expls_test.append(origexpl_test.detach().to(self.device))
 
         original_expls_test = torch.stack( original_expls_test )
+        print( original_expls_test.size())
         target_expls_test = self.get_stats_target_explanations(original_expls_test)
 
         # Exchange activation function with softplus
@@ -423,6 +438,20 @@ class Run():
         print("Starting fine-tuning...")
         # Iterate over the maximal number of epochs
         for epoch in tqdm.tqdm(range(1,self.max_epochs+1)):
+            # Prepare containers for first-epoch gradient metrics and output dir
+            if epoch == 1:
+                conv_grad_per_param_epoch1: typing.List[float] = []
+                bn_beta_grad_per_param_epoch1: typing.List[float] = []
+                bn_gamma_grad_per_param_epoch1: typing.List[float] = []
+                # Track standard deviations for CSV export
+                conv_grad_sd_epoch1: typing.List[float] = []
+                bn_beta_grad_sd_epoch1: typing.List[float] = []
+                bn_gamma_grad_sd_epoch1: typing.List[float] = []
+                first_batch_quickplot_done = False
+                # Resolve repo-level output directory: <repo_root>/output
+                repo_root = Path(__file__).resolve().parent.parent
+                self._repo_output_dir = repo_root / 'output'
+                self._repo_output_dir.mkdir(exist_ok=True)
 
             # Use learning rate decaying
             for g in optimizer.param_groups:
@@ -451,8 +480,133 @@ class Run():
                     loss = self.loss_weight * loss_explanation + (1.0 - self.loss_weight) * loss_label
                 else:
                     loss = label_loss(output, label_batch)
+                    loss_label = loss
 
+                # Compute label-only gradient metrics (compensated for loss weighting) BEFORE backward of total loss
+                conv_layers = [m for m in model.modules() if isinstance(m, torch.nn.Conv2d)]
+                bn_layers = [m for m in model.modules() if isinstance(m, torch.nn.BatchNorm2d)]
+
+                # Select parameter tensors for gradient extraction (split BN gamma/weight and beta/bias)
+                if self.grad_layer == 0:
+                    conv_params = [l.weight for l in conv_layers]
+                    bn_weight_params = []  # gamma
+                    bn_bias_params = []    # beta
+                    for l in bn_layers:
+                        if hasattr(l, 'weight') and l.weight is not None:
+                            bn_weight_params.append(l.weight)
+                        if hasattr(l, 'bias') and l.bias is not None:
+                            bn_bias_params.append(l.bias)
+                else:
+                    idx_sel = max(0, self.grad_layer - 1)
+                    conv_params = [conv_layers[idx_sel].weight] if idx_sel < len(conv_layers) else []
+                    bn_weight_params = []
+                    bn_bias_params = []
+                    if idx_sel < len(bn_layers):
+                        if hasattr(bn_layers[idx_sel], 'weight') and bn_layers[idx_sel].weight is not None:
+                            bn_weight_params.append(bn_layers[idx_sel].weight)
+                        if hasattr(bn_layers[idx_sel], 'bias') and bn_layers[idx_sel].bias is not None:
+                            bn_bias_params.append(bn_layers[idx_sel].bias)
+
+                params_for_grad = conv_params + bn_weight_params + bn_bias_params
+                if len(params_for_grad) > 0:
+                    grads = torch.autograd.grad(loss_label, params_for_grad, retain_graph=True, allow_unused=True)
+                else:
+                    grads = []
+
+                # Split grads back
+                conv_grads = grads[:len(conv_params)] if len(grads) >= len(conv_params) else []
+                start = len(conv_params)
+                end_weight = start + len(bn_weight_params)
+                bn_weight_grads = grads[start:end_weight] if len(grads) >= end_weight else []
+                bn_bias_grads = grads[end_weight:] if len(grads) >= end_weight else []
+
+                # Compute elementwise |grad| stats (no division by weights): mean and std across selected tensors
+                def grad_over_param_stats(grad_list, param_list, eps: float = 1e-12):
+                    total_sum = 0.0
+                    total_sumsq = 0.0
+                    total_count = 0
+                    for g, p in zip(grad_list, param_list):
+                        if g is None:
+                            continue
+                        r = g.abs().reshape(-1)
+                        total_sum += r.sum().item()
+                        total_sumsq += (r.pow(2)).sum().item()
+                        total_count += r.numel()
+                    if total_count == 0:
+                        return float('nan'), float('nan')
+                    mean = total_sum / total_count
+                    var = max(total_sumsq / total_count - mean * mean, 0.0)
+                    std = var ** 0.5
+                    # Normalize aggregated stats by ||params|| (L2 norm across selected parameters)
+                    try:
+                        param_norm_sq = 0.0
+                        for p in param_list:
+                            if p is None:
+                                continue
+                            param_norm_sq += (p.detach().pow(2)).sum().item()
+                        param_norm = max(param_norm_sq ** 0.5, eps)
+                    except Exception:
+                        param_norm = 1.0
+                    mean /= param_norm
+                    std /= param_norm
+                    return mean, std
+
+                conv_mean, conv_std = grad_over_param_stats(conv_grads, conv_params)
+                bn_gamma_mean, bn_gamma_std = grad_over_param_stats(bn_weight_grads, bn_weight_params)
+                bn_beta_mean, bn_beta_std = grad_over_param_stats(bn_bias_grads, bn_bias_params)
+
+                # Use mean as scalar metric for downstream plots/CSV
+                conv_metric = conv_mean
+                bn_beta_metric = bn_beta_mean
+                bn_gamma_metric = bn_gamma_mean
+
+                # Now backprop total loss and step
                 loss.backward()
+
+                # Print per-batch values
+                print(f"Batch {batch_counter}: Conv |g| mean={conv_mean:.6e} sd={conv_std:.6e} | BN(beta) |g| mean={bn_beta_mean:.6e} sd={bn_beta_std:.6e} | BN(gamma) |g| mean={bn_gamma_mean:.6e} sd={bn_gamma_std:.6e}")
+
+                # Store metrics for first epoch and quick-plot after first batch
+                if epoch == 1:
+                    conv_grad_per_param_epoch1.append(conv_metric)
+                    bn_beta_grad_per_param_epoch1.append(bn_beta_metric)
+                    bn_gamma_grad_per_param_epoch1.append(bn_gamma_metric)
+                    # Also store standard deviations
+                    conv_grad_sd_epoch1.append(conv_std)
+                    bn_beta_grad_sd_epoch1.append(bn_beta_std)
+                    bn_gamma_grad_sd_epoch1.append(bn_gamma_std)
+                    if not first_batch_quickplot_done:
+                        try:
+                            # Set all font sizes for this figure to 18 using a temporary rc context
+                            with plt.rc_context({'font.size': 18,
+                                                 'legend.fontsize': 18,
+                                                 'axes.titlesize': 18,
+                                                 'axes.labelsize': 18,
+                                                 'xtick.labelsize': 18,
+                                                 'ytick.labelsize': 18}):
+                                fig, ax = plt.subplots(1, 1, figsize=(5, 3))
+                                # Keep mean as-is, scale variance to [0,1] using this batch's (mean+variance)
+                                conv_var = (conv_std if not (isinstance(conv_std, float) and np.isnan(conv_std)) else 0.0) ** 2
+                                scale_first = max((conv_metric + conv_var) if (not (isinstance(conv_metric, float) and np.isnan(conv_metric))) else 0.0, 1e-12)
+                                conv_var_scaled = conv_var / scale_first
+                                yval = max(conv_metric, 1e-12)
+                                ax.plot([1], [yval], marker='o', color='C0')
+                                # Add scaled variance as errorbar for the first batch
+                                try:
+                                    ax.errorbar([1], [yval], yerr=[[conv_var_scaled], [conv_var_scaled]], fmt='none', ecolor='C0', capsize=3, alpha=0.8)
+                                except Exception:
+                                    pass
+                                #ax.set_title('First-batch conv grad/param')
+                                ax.set_xlabel('Batch')
+                                ax.set_ylabel('|g|/||params||')
+                                ax.set_yscale('log')
+                                fig.tight_layout()
+                                fig.savefig(self._repo_output_dir / 'conv_grad_first_batch.pdf', bbox_inches='tight', pad_inches=0.0)
+                                plt.close(fig)
+                        except Exception as _e:
+                            plt.close('all')
+                        first_batch_quickplot_done = True
+
                 optimizer.step()
 
                 # Calculate statistics on relu
@@ -464,6 +618,178 @@ class Run():
                 model.set_softplus(self.beta)
 
                 batch_counter += 1
+
+            # After completing the first epoch, export the epoch gradient plot
+            if epoch == 1:
+                try:
+                    # Save CSV with epoch-1 gradient metrics (attacked path)
+                    try:
+                        import csv
+                        # Compute normalization scale for CSV as max over (mean+sd) across all three series
+                        scale_candidates = []
+                        for m, s in zip(conv_grad_per_param_epoch1, conv_grad_sd_epoch1):
+                            if not (isinstance(m, float) and np.isnan(m)) and not (isinstance(s, float) and np.isnan(s)):
+                                scale_candidates.append(m + s)
+                        for m, s in zip(bn_beta_grad_per_param_epoch1, bn_beta_grad_sd_epoch1):
+                            if not (isinstance(m, float) and np.isnan(m)) and not (isinstance(s, float) and np.isnan(s)):
+                                scale_candidates.append(m + s)
+                        for m, s in zip(bn_gamma_grad_per_param_epoch1, bn_gamma_grad_sd_epoch1):
+                            if not (isinstance(m, float) and np.isnan(m)) and not (isinstance(s, float) and np.isnan(s)):
+                                scale_candidates.append(m + s)
+                        scale_sd = max(scale_candidates) if len(scale_candidates) > 0 else 1.0
+                        if scale_sd <= 0 or np.isnan(scale_sd):
+                            scale_sd = 1.0
+
+                        # Prepare series: mean as-is, sd scaled for CSV
+                        conv_mean_series = conv_grad_per_param_epoch1
+                        conv_sd_scaled = [s / scale_sd for s in conv_grad_sd_epoch1]
+                        bn_beta_mean_series = bn_beta_grad_per_param_epoch1
+                        bn_beta_sd_scaled = [s / scale_sd for s in bn_beta_grad_sd_epoch1]
+                        bn_gamma_mean_series = bn_gamma_grad_per_param_epoch1
+                        bn_gamma_sd_scaled = [s / scale_sd for s in bn_gamma_grad_sd_epoch1]
+
+                        csv_path = self._repo_output_dir / 'gradients_epoch1.csv'
+                        with open(csv_path, 'w', newline='') as f:
+                            w = csv.writer(f)
+                            # Export mean (raw) and standard deviation (scaled) for conv, BN beta, BN gamma
+                            w.writerow(['batch', 'conv_mean', 'conv_sd', 'bn_beta_mean', 'bn_beta_sd', 'bn_gamma_mean', 'bn_gamma_sd'])
+                            for i, (cm, cs, bbm, bbs, bgm, bgs) in enumerate(zip(conv_mean_series,
+                                                                                conv_sd_scaled,
+                                                                                bn_beta_mean_series,
+                                                                                bn_beta_sd_scaled,
+                                                                                bn_gamma_mean_series,
+                                                                                bn_gamma_sd_scaled), start=1):
+                                w.writerow([i, cm, cs, bbm, bbs, bgm, bgs])
+                    except Exception:
+                        pass
+
+                   
+                    xs = list(range(1, len(conv_grad_per_param_epoch1) + 1))
+                    fig, ax = plt.subplots(1, 1, figsize=(6.5, 4))
+                    # Align font sizes with clean path (equivalent to rc_context font.size=18)
+                    ax.tick_params(labelsize=18)
+                    # Means as-is, variance scaled using scale derived from (mean+variance)
+                    try:
+                        # compute scale for variance-based shading
+                        scale_candidates = []
+                        for m, s in zip(conv_grad_per_param_epoch1, conv_grad_sd_epoch1):
+                            if not (isinstance(m, float) and np.isnan(m)) and not (isinstance(s, float) and np.isnan(s)):
+                                scale_candidates.append(m + s*s)
+                        for m, s in zip(bn_beta_grad_per_param_epoch1, bn_beta_grad_sd_epoch1):
+                            if not (isinstance(m, float) and np.isnan(m)) and not (isinstance(s, float) and np.isnan(s)):
+                                scale_candidates.append(m + s*s)
+                        for m, s in zip(bn_gamma_grad_per_param_epoch1, bn_gamma_grad_sd_epoch1):
+                            if not (isinstance(m, float) and np.isnan(m)) and not (isinstance(s, float) and np.isnan(s)):
+                                scale_candidates.append(m + s*s)
+                        scale_var = max(scale_candidates) if len(scale_candidates) > 0 else 1.0
+                        if scale_var <= 0 or np.isnan(scale_var):
+                            scale_var = 1.0
+
+                        conv_mean_series = conv_grad_per_param_epoch1
+                        conv_var_scaled = [(s*s) / scale_var for s in conv_grad_sd_epoch1]
+                        bn_beta_mean_series = bn_beta_grad_per_param_epoch1
+                        bn_beta_var_scaled = [(s*s) / scale_var for s in bn_beta_grad_sd_epoch1]
+                        bn_gamma_mean_series = bn_gamma_grad_per_param_epoch1
+                        bn_gamma_var_scaled = [(s*s) / scale_var for s in bn_gamma_grad_sd_epoch1]
+                    except Exception:
+                        conv_mean_series = conv_grad_per_param_epoch1
+                        conv_var_scaled = [s*s for s in conv_grad_sd_epoch1]
+                        bn_beta_mean_series = bn_beta_grad_per_param_epoch1
+                        bn_beta_var_scaled = [s*s for s in bn_beta_grad_sd_epoch1]
+                        bn_gamma_mean_series = bn_gamma_grad_per_param_epoch1
+                        bn_gamma_var_scaled = [s*s for s in bn_gamma_grad_sd_epoch1]
+
+                    # Smooth series for plotting (moving average)
+                    def _smooth(arr, w=7):
+                        try:
+                            if arr is None:
+                                return arr
+                            n = len(arr)
+                            if n < 3 or w <= 1:
+                                return arr
+                            w = min(w, n)
+                            kernel = np.ones(w, dtype=float) / float(w)
+                            return np.convolve(np.asarray(arr, dtype=float), kernel, mode='same').tolist()
+                        except Exception:
+                            return arr
+
+                    conv_mean_plot = _smooth(conv_mean_series)
+                    bn_beta_mean_plot = _smooth(bn_beta_mean_series)
+                    bn_gamma_mean_plot = _smooth(bn_gamma_mean_series)
+                    conv_var_plot = _smooth(conv_var_scaled)
+                    bn_beta_var_plot = _smooth(bn_beta_var_scaled)
+                    bn_gamma_var_plot = _smooth(bn_gamma_var_scaled)
+
+                    # Plot smoothed means (ensure positivity for log-scale)
+                    eps = 1e-12
+                    conv_mean_plot = [max(m, eps) for m in conv_mean_plot]
+                    bn_beta_mean_plot = [max(m, eps) for m in bn_beta_mean_plot]
+                    bn_gamma_mean_plot = [max(m, eps) for m in bn_gamma_mean_plot]
+                    ax.plot(xs, conv_mean_plot, label='Core weight', color='C0')
+                    ax.plot(xs, bn_beta_mean_plot, label='Beta weight', color='C2')
+                    ax.plot(xs, bn_gamma_mean_plot, label='Gamma weight', color='C1')
+                    # Add ± scaled variance shading around smoothed means
+                    try:
+                        conv_lower = [m - v for m, v in zip(conv_mean_plot, conv_var_plot)]
+                        conv_upper = [m + v for m, v in zip(conv_mean_plot, conv_var_plot)]
+                        bn_beta_lower = [m - v for m, v in zip(bn_beta_mean_plot, bn_beta_var_plot)]
+                        bn_beta_upper = [m + v for m, v in zip(bn_beta_mean_plot, bn_beta_var_plot)]
+                        bn_gamma_lower = [m - v for m, v in zip(bn_gamma_mean_plot, bn_gamma_var_plot)]
+                        bn_gamma_upper = [m + v for m, v in zip(bn_gamma_mean_plot, bn_gamma_var_plot)]
+                        # Clamp for log-scale plotting (avoid non-positive values)
+                        eps = 1e-12
+                        conv_lower = [max(val, eps) for val in conv_lower]
+                        conv_upper = [max(val, eps) for val in conv_upper]
+                        bn_beta_lower = [max(val, eps) for val in bn_beta_lower]
+                        bn_beta_upper = [max(val, eps) for val in bn_beta_upper]
+                        bn_gamma_lower = [max(val, eps) for val in bn_gamma_lower]
+                        bn_gamma_upper = [max(val, eps) for val in bn_gamma_upper]
+                        ax.fill_between(xs, conv_lower, conv_upper, color='C0', alpha=0.15)
+                        ax.fill_between(xs, bn_beta_lower, bn_beta_upper, color='C2', alpha=0.15)
+                        ax.fill_between(xs, bn_gamma_lower, bn_gamma_upper, color='C1', alpha=0.15)
+                    except Exception:
+                        pass
+                    # Compute a common y-axis max across execute and execute_clean
+                    try:
+                        y_candidates = []
+                        if len(conv_upper) > 0:
+                            y_candidates.append(max(conv_upper))
+                        if len(bn_beta_upper) > 0:
+                            y_candidates.append(max(bn_beta_upper))
+                        if len(bn_gamma_upper) > 0:
+                            y_candidates.append(max(bn_gamma_upper))
+                        y_max_local = max(y_candidates) if len(y_candidates) > 0 else 1.0
+                        if not np.isfinite(y_max_local) or y_max_local <= 0:
+                            y_max_local = 1.0
+                        ymax_file = self._repo_output_dir / 'gradients_epoch1_ymax.txt'
+                        y_max_common = y_max_local
+                        if ymax_file.exists():
+                            try:
+                                with open(ymax_file, 'r') as f:
+                                    prev = float(f.read().strip())
+                                if np.isfinite(prev) and prev > 0:
+                                    y_max_common = max(prev, y_max_local)
+                            except Exception:
+                                pass
+                        # Persist the max for future plots
+                        try:
+                            with open(ymax_file, 'w') as f:
+                                f.write(str(y_max_common))
+                        except Exception:
+                            pass
+                        ax.set_ylim(bottom=1e-12, top=y_max_common)
+                    except Exception:
+                        pass
+                    ax.set_xlabel('Batch', fontsize=18)
+                    ax.set_ylabel('|g|/||params||', fontsize=18)
+                    ax.set_yscale('log')
+                    ax.legend(prop={'size': 18})
+                    #ax.set_title('Per-batch gradient metrics (epoch 1)')
+                    fig.tight_layout()
+                    fig.savefig(self._repo_output_dir / 'gradients_epoch1.pdf', bbox_inches='tight', pad_inches=0.0)
+                    plt.close(fig)
+                except Exception as _e:
+                    plt.close('all')
 
             self._plot(model, x_test, label_test, epoch)
 
@@ -494,8 +820,401 @@ class Run():
         if not containsNaN:
             # In anycase save the last model!
             self._save_model(model, self.epoch)
+            
 
         print(f'\nFinished Training  ({time.time() - self.training_starttime}sec)')
+        self.training_endtime = time.time()
+        self.training_duration = self.training_endtime - self.training_starttime
+        self.set_trained()
+
+    def execute_clean(self):
+        """
+        Baseline fine-tuning without any attack, data manipulation, or explanation loss.
+        Trains only with label loss and records per-batch gradient metrics for Conv/BN
+        as configured via self.grad_layer. Saves a quick first-batch plot and a full
+        first-epoch plot to the repo-level output directory.
+        """
+        if self.is_trained() or self.is_training():
+            raise SomebodyElseWasFasterException('Someone else was faster!')
+        else:
+            self.set_training()
+
+        # Set environmental variables
+        os.environ['CUDADEVICE'] = str(self.device)
+        os.environ['MODELTYPE'] = str(self.modeltype)
+
+        # Start timer
+        self.training_starttime = time.time()
+
+        print('Loading data (clean baseline)')
+        x_test, label_test, x_train, label_train = load_data(self.dataset)
+
+        # Load model
+        print(f"Loading model (clean), model id: {self.model_id}, type: {self.modeltype}")
+        model = load_model(self.modeltype, self.model_id)
+        original_model = self.get_original_model()  # for parity; not used for loss
+        model.eval()
+        original_model.eval()
+
+        # Use full training data for batching (clean baseline)
+        print("Using full training data for clean baseline batching")
+        x_finetune, label_finetune = x_train, label_train
+
+        # Move to device
+        print("Move data to device")
+        x_finetune = x_finetune.to(self.device)
+        label_finetune = label_finetune.to(self.device)
+
+        # Setup optimizer and loss (label-only)
+        print("Setting up optimizer (clean)")
+        optimizer = torch.optim.Adam(model.parameters(), lr=self.learning_rate, eps=1e-5)
+        label_loss = torch.nn.CrossEntropyLoss(reduction='mean')
+
+        # Output directory for plots
+        repo_root = Path(__file__).resolve().parent.parent
+        self._repo_output_dir = repo_root / 'output'
+        self._repo_output_dir.mkdir(exist_ok=True)
+
+        # Parity with execute(): initial plot at epoch 0 (if persistent Run)
+        self._plot(model, x_test, label_test, 0)
+        print("Starting clean fine-tuning...")
+        batch_counter = 1
+        # Training loop (manual batching over x_train/label_train)
+        for epoch in tqdm.tqdm(range(1, self.max_epochs + 1)):
+            if epoch == 1:
+                conv_grad_per_param_epoch1: typing.List[float] = []
+                bn_beta_grad_per_param_epoch1: typing.List[float] = []
+                bn_gamma_grad_per_param_epoch1: typing.List[float] = []
+                # Track standard deviations for CSV export
+                conv_grad_sd_epoch1: typing.List[float] = []
+                bn_beta_grad_sd_epoch1: typing.List[float] = []
+                bn_gamma_grad_sd_epoch1: typing.List[float] = []
+                first_batch_quickplot_done = False
+
+            # LR decay
+            for g in optimizer.param_groups:
+                g['lr'] = (1 / (1 + self.decay_rate * (epoch - 1))) * self.learning_rate
+
+            # Use Softplus activations as in attacked training
+            model.set_softplus(self.beta)
+
+            # Shuffle indices each epoch and iterate in mini-batches from x_train/label_train
+            N = x_finetune.shape[0]
+            perm = torch.randperm(N, device=self.device)
+            for start in range(0, N, self.batch_size):
+                idx = perm[start:start + self.batch_size]
+                x_batch = x_finetune[idx]
+                label_batch = label_finetune[idx]
+
+                optimizer.zero_grad()
+                output = model(x_batch)
+                loss = label_loss(output, label_batch) #* (1.0 - self.loss_weight)
+
+                # Compute label-only gradient metrics BEFORE backward
+                conv_layers = [m for m in model.modules() if isinstance(m, torch.nn.Conv2d)]
+                bn_layers = [m for m in model.modules() if isinstance(m, torch.nn.BatchNorm2d)]
+
+                if self.grad_layer == 0:
+                    conv_params = [l.weight for l in conv_layers]
+                    bn_weight_params = []
+                    bn_bias_params = []
+                    for l in bn_layers:
+                        if hasattr(l, 'weight') and l.weight is not None:
+                            bn_weight_params.append(l.weight)
+                        if hasattr(l, 'bias') and l.bias is not None:
+                            bn_bias_params.append(l.bias)
+                else:
+                    idx_layer = max(0, self.grad_layer - 1)
+                    conv_params = [conv_layers[idx_layer].weight] if idx_layer < len(conv_layers) else []
+                    bn_weight_params = []
+                    bn_bias_params = []
+                    if idx_layer < len(bn_layers):
+                        if hasattr(bn_layers[idx_layer], 'weight') and bn_layers[idx_layer].weight is not None:
+                            bn_weight_params.append(bn_layers[idx_layer].weight)
+                        if hasattr(bn_layers[idx_layer], 'bias') and bn_layers[idx_layer].bias is not None:
+                            bn_bias_params.append(bn_layers[idx_layer].bias)
+
+                params_for_grad = conv_params + bn_weight_params + bn_bias_params
+                if len(params_for_grad) > 0:
+                    grads = torch.autograd.grad(loss, params_for_grad, retain_graph=True, allow_unused=True)
+                else:
+                    grads = []
+
+                conv_grads = grads[:len(conv_params)] if len(grads) >= len(conv_params) else []
+                start = len(conv_params)
+                end_weight = start + len(bn_weight_params)
+                bn_weight_grads = grads[start:end_weight] if len(grads) >= end_weight else []
+                bn_bias_grads = grads[end_weight:] if len(grads) >= end_weight else []
+
+                def grad_over_param_stats(grad_list, param_list, eps=1e-12):
+                    total_sum = 0.0
+                    total_sumsq = 0.0
+                    total_count = 0
+                    for g, p in zip(grad_list, param_list):
+                        if g is None:
+                            continue
+                        r = g.abs().reshape(-1)
+                        total_sum += r.sum().item()
+                        total_sumsq += (r.pow(2)).sum().item()
+                        total_count += r.numel()
+                    if total_count == 0:
+                        return float('nan'), float('nan')
+                    mean = total_sum / total_count
+                    var = max(total_sumsq / total_count - mean * mean, 0.0)
+                    std = var ** 0.5
+                    # Normalize aggregated stats by ||params|| (L2 norm across selected parameters)
+                    try:
+                        param_norm_sq = 0.0
+                        for p in param_list:
+                            if p is None:
+                                continue
+                            param_norm_sq += (p.detach().pow(2)).sum().item()
+                        param_norm = max(param_norm_sq ** 0.5, eps)
+                    except Exception:
+                        param_norm = 1.0
+                    mean /= param_norm
+                    std /= param_norm
+                    return mean, std
+
+                conv_mean, conv_std = grad_over_param_stats(conv_grads, conv_params)
+                bn_gamma_mean, bn_gamma_std = grad_over_param_stats(bn_weight_grads, bn_weight_params)
+                bn_beta_mean, bn_beta_std = grad_over_param_stats(bn_bias_grads, bn_bias_params)
+
+                conv_metric = conv_mean
+                bn_beta_metric = bn_beta_mean
+                bn_gamma_metric = bn_gamma_mean
+
+                # Backprop and step
+                loss.backward()
+
+                print(f"[CLEAN] Batch {batch_counter}: Conv |g| mean={conv_mean:.6e} sd={conv_std:.6e} | BN(beta) |g| mean={bn_beta_mean:.6e} sd={bn_beta_std:.6e} | BN(gamma) |g| mean={bn_gamma_mean:.6e} sd={bn_gamma_std:.6e}")
+
+                if epoch == 1:
+
+
+                    conv_grad_per_param_epoch1.append(conv_metric)
+                    bn_beta_grad_per_param_epoch1.append(bn_beta_metric)
+                    bn_gamma_grad_per_param_epoch1.append(bn_gamma_metric)
+                    # Also store standard deviations
+                    conv_grad_sd_epoch1.append(conv_std)
+                    bn_beta_grad_sd_epoch1.append(bn_beta_std)
+                    bn_gamma_grad_sd_epoch1.append(bn_gamma_std)
+                    if not first_batch_quickplot_done:
+                        try:
+                            # Set all font sizes for this figure to 18 using a temporary rc context
+                            with plt.rc_context({'font.size': 18,
+                                                 'legend.fontsize': 18,
+                                                 'axes.titlesize': 18,
+                                                 'axes.labelsize': 18,
+                                                 'xtick.labelsize': 18,
+                                                 'ytick.labelsize': 18}):
+                                fig, ax = plt.subplots(1, 1, figsize=(5, 3))
+                            # Keep mean as-is, scale variance to [0,1] using (mean+variance) of the first batch (clean)
+                            conv_var = (conv_std if not (isinstance(conv_std, float) and np.isnan(conv_std)) else 0.0) ** 2
+                            scale_first = max((conv_metric + conv_var) if (not (isinstance(conv_metric, float) and np.isnan(conv_metric))) else 0.0, 1e-12)
+                            conv_var_scaled = conv_var / scale_first
+                            yval = max(conv_metric, 1e-12)
+                            ax.plot([1], [yval], marker='o', color='C0')
+                            # Add scaled standard deviation as errorbar
+                            try:
+                                ax.errorbar([1], [yval], yerr=[[conv_var_scaled], [conv_var_scaled]], fmt='none', ecolor='C0', capsize=3, alpha=0.8)
+                            except Exception:
+                                pass
+                            #ax.set_title('First-batch conv grad/param (clean)')
+                            ax.set_xlabel('Batch')
+                            ax.set_ylabel('|g|/||params||')
+                            ax.set_yscale('log')
+                            fig.tight_layout()
+                            fig.savefig(self._repo_output_dir / 'conv_grad_first_batch_clean.pdf', bbox_inches='tight', pad_inches=0.0)
+                            plt.close(fig)
+                        except Exception:
+                            plt.close('all')
+                        first_batch_quickplot_done = True
+
+                optimizer.step()
+                batch_counter += 1
+
+            # Track current epoch as in execute()
+            self.epoch = epoch
+
+        if epoch == 1:
+            # Save CSV with epoch-1 gradient metrics (clean baseline)
+                try:
+                    import csv
+                    # Compute scale as max over (mean+sd) across all three series (clean)
+                    scale_candidates = []
+                    for m, s in zip(conv_grad_per_param_epoch1, conv_grad_sd_epoch1):
+                        if not (isinstance(m, float) and np.isnan(m)) and not (isinstance(s, float) and np.isnan(s)):
+                            scale_candidates.append(m + s)
+                    for m, s in zip(bn_beta_grad_per_param_epoch1, bn_beta_grad_sd_epoch1):
+                        if not (isinstance(m, float) and np.isnan(m)) and not (isinstance(s, float) and np.isnan(s)):
+                            scale_candidates.append(m + s)
+                    for m, s in zip(bn_gamma_grad_per_param_epoch1, bn_gamma_grad_sd_epoch1):
+                        if not (isinstance(m, float) and np.isnan(m)) and not (isinstance(s, float) and np.isnan(s)):
+                            scale_candidates.append(m + s)
+                    scale = max(scale_candidates) if len(scale_candidates) > 0 else 1.0
+                    if scale <= 0 or np.isnan(scale):
+                        scale = 1.0
+
+                    # Prepare series: mean raw, SD scaled by scale
+                    conv_means = conv_grad_per_param_epoch1
+                    conv_sd_scaled = [s / scale for s in conv_grad_sd_epoch1]
+                    bn_beta_means = bn_beta_grad_per_param_epoch1
+                    bn_beta_sd_scaled = [s / scale for s in bn_beta_grad_sd_epoch1]
+                    bn_gamma_means = bn_gamma_grad_per_param_epoch1
+                    bn_gamma_sd_scaled = [s / scale for s in bn_gamma_grad_sd_epoch1]
+
+                    csv_path = self._repo_output_dir / 'gradients_epoch1_clean.csv'
+                    with open(csv_path, 'w', newline='') as f:
+                        w = csv.writer(f)
+                        # Export raw mean and scaled standard deviation of |g| for conv, BN beta, BN gamma
+                        w.writerow(['batch', 'conv_mean', 'conv_sd', 'bn_beta_mean', 'bn_beta_sd', 'bn_gamma_mean', 'bn_gamma_sd'])
+                        for i, (cm, cs, bbm, bbs, bgm, bgs) in enumerate(zip(conv_means,
+                                                                            conv_sd_scaled,
+                                                                            bn_beta_means,
+                                                                            bn_beta_sd_scaled,
+                                                                            bn_gamma_means,
+                                                                            bn_gamma_sd_scaled), start=1):
+                            w.writerow([i, cm, cs, bbm, bbs, bgm, bgs])
+                except Exception:
+                    pass
+                try:
+                    xs = list(range(1, len(conv_grad_per_param_epoch1) + 1))
+                    # Set all font sizes for this figure to 18 using a temporary rc context
+                    with plt.rc_context({'font.size': 18,
+                                         'legend.fontsize': 18,
+                                         'axes.titlesize': 18,
+                                         'axes.labelsize': 18,
+                                         'xtick.labelsize': 18,
+                                         'ytick.labelsize': 18}):
+                        fig, ax = plt.subplots(1, 1, figsize=(6.5, 4))
+                        # Means as-is, variance scaled (clean)
+                        try:
+                            # compute scale for variance-based shading
+                            scale_candidates = []
+                            for m, s in zip(conv_grad_per_param_epoch1, conv_grad_sd_epoch1):
+                                if not (isinstance(m, float) and np.isnan(m)) and not (isinstance(s, float) and np.isnan(s)):
+                                    scale_candidates.append(m + s*s)
+                            for m, s in zip(bn_beta_grad_per_param_epoch1, bn_beta_grad_sd_epoch1):
+                                if not (isinstance(m, float) and np.isnan(m)) and not (isinstance(s, float) and np.isnan(s)):
+                                    scale_candidates.append(m + s*s)
+                            for m, s in zip(bn_gamma_grad_per_param_epoch1, bn_gamma_grad_sd_epoch1):
+                                if not (isinstance(m, float) and np.isnan(m)) and not (isinstance(s, float) and np.isnan(s)):
+                                    scale_candidates.append(m + s*s)
+                            scale_var = max(scale_candidates) if len(scale_candidates) > 0 else 1.0
+                            if scale_var <= 0 or np.isnan(scale_var):
+                                scale_var = 1.0
+
+                            conv_mean_series = conv_grad_per_param_epoch1
+                            conv_var_scaled = [(s*s) / scale_var for s in conv_grad_sd_epoch1]
+                            bn_beta_mean_series = bn_beta_grad_per_param_epoch1
+                            bn_beta_var_scaled = [(s*s) / scale_var for s in bn_beta_grad_sd_epoch1]
+                            bn_gamma_mean_series = bn_gamma_grad_per_param_epoch1
+                            bn_gamma_var_scaled = [(s*s) / scale_var for s in bn_gamma_grad_sd_epoch1]
+                        except Exception:
+                            conv_mean_series = conv_grad_per_param_epoch1
+                            conv_var_scaled = [s*s for s in conv_grad_sd_epoch1]
+                            bn_beta_mean_series = bn_beta_grad_per_param_epoch1
+                            bn_beta_var_scaled = [s*s for s in bn_beta_grad_sd_epoch1]
+                            bn_gamma_mean_series = bn_gamma_grad_per_param_epoch1
+                            bn_gamma_var_scaled = [s*s for s in bn_gamma_grad_sd_epoch1]
+
+                        # Smooth series for plotting (moving average)
+                        def _smooth(arr, w=7):
+                            try:
+                                if arr is None:
+                                    return arr
+                                n = len(arr)
+                                if n < 3 or w <= 1:
+                                    return arr
+                                w = min(w, n)
+                                kernel = np.ones(w, dtype=float) / float(w)
+                                return np.convolve(np.asarray(arr, dtype=float), kernel, mode='same').tolist()
+                            except Exception:
+                                return arr
+
+                        conv_mean_plot = _smooth(conv_mean_series)
+                        bn_beta_mean_plot = _smooth(bn_beta_mean_series)
+                        bn_gamma_mean_plot = _smooth(bn_gamma_mean_series)
+                        conv_var_plot = _smooth(conv_var_scaled)
+                        bn_beta_var_plot = _smooth(bn_beta_var_scaled)
+                        bn_gamma_var_plot = _smooth(bn_gamma_var_scaled)
+
+                        # Plot smoothed means (ensure positivity for log-scale)
+                        eps = 1e-12
+                        conv_mean_plot = [max(m, eps) for m in conv_mean_plot]
+                        bn_beta_mean_plot = [max(m, eps) for m in bn_beta_mean_plot]
+                        bn_gamma_mean_plot = [max(m, eps) for m in bn_gamma_mean_plot]
+                        ax.plot(xs, conv_mean_plot, label='Core weight', color='C0')
+                        ax.plot(xs, bn_beta_mean_plot, label='Beta weight', color='C2')
+                        ax.plot(xs, bn_gamma_mean_plot, label='Gamma weight', color='C1')
+                        # Add ± scaled variance shading around smoothed means
+                        try:
+                            conv_lower = [m - v for m, v in zip(conv_mean_plot, conv_var_plot)]
+                            conv_upper = [m + v for m, v in zip(conv_mean_plot, conv_var_plot)]
+                            bn_beta_lower = [m - v for m, v in zip(bn_beta_mean_plot, bn_beta_var_plot)]
+                            bn_beta_upper = [m + v for m, v in zip(bn_beta_mean_plot, bn_beta_var_plot)]
+                            bn_gamma_lower = [m - v for m, v in zip(bn_gamma_mean_plot, bn_gamma_var_plot)]
+                            bn_gamma_upper = [m + v for m, v in zip(bn_gamma_mean_plot, bn_gamma_var_plot)]
+                            # Clamp for log-scale plotting
+                            eps = 1e-12
+                            conv_lower = [max(val, eps) for val in conv_lower]
+                            conv_upper = [max(val, eps) for val in conv_upper]
+                            bn_beta_lower = [max(val, eps) for val in bn_beta_lower]
+                            bn_beta_upper = [max(val, eps) for val in bn_beta_upper]
+                            bn_gamma_lower = [max(val, eps) for val in bn_gamma_lower]
+                            bn_gamma_upper = [max(val, eps) for val in bn_gamma_upper]
+                            ax.fill_between(xs, conv_lower, conv_upper, color='C0', alpha=0.15)
+                            ax.fill_between(xs, bn_beta_lower, bn_beta_upper, color='C2', alpha=0.15)
+                            ax.fill_between(xs, bn_gamma_lower, bn_gamma_upper, color='C1', alpha=0.15)
+                        except Exception:
+                            pass
+                        # Compute a common y-axis max across execute and execute_clean
+                        try:
+                            y_candidates = []
+                            if len(conv_upper) > 0:
+                                y_candidates.append(max(conv_upper))
+                            if len(bn_beta_upper) > 0:
+                                y_candidates.append(max(bn_beta_upper))
+                            if len(bn_gamma_upper) > 0:
+                                y_candidates.append(max(bn_gamma_upper))
+                            y_max_local = max(y_candidates) if len(y_candidates) > 0 else 1.0
+                            if not np.isfinite(y_max_local) or y_max_local <= 0:
+                                y_max_local = 1.0
+                            ymax_file = self._repo_output_dir / 'gradients_epoch1_ymax.txt'
+                            y_max_common = y_max_local
+                            if ymax_file.exists():
+                                try:
+                                    with open(ymax_file, 'r') as f:
+                                        prev = float(f.read().strip())
+                                    if np.isfinite(prev) and prev > 0:
+                                        y_max_common = max(prev, y_max_local)
+                                except Exception:
+                                    pass
+                            # Persist the max for future plots
+                            try:
+                                with open(ymax_file, 'w') as f:
+                                    f.write(str(y_max_common))
+                            except Exception:
+                                pass
+                            ax.set_ylim(bottom=1e-12, top=y_max_common)
+                        except Exception:
+                            pass
+                        ax.set_xlabel('Batch')
+                        ax.set_ylabel('|g|/||params||')
+                        ax.set_yscale('log')
+                        ax.legend()
+                        #ax.set_title('Per-batch gradient metrics (epoch 1, clean)')
+                        fig.tight_layout()
+                        fig.savefig(self._repo_output_dir / 'gradients_epoch1_clean.pdf', bbox_inches='tight', pad_inches=0.0)
+                        plt.close(fig)
+                except Exception:
+                    plt.close('all')
+
+        # Save last model for parity
+        self._save_model(model, self.epoch)
+
+        print(f'\nFinished Clean Training  ({time.time() - self.training_starttime}sec)')
         self.training_endtime = time.time()
         self.training_duration = self.training_endtime - self.training_starttime
         self.set_trained()
@@ -811,6 +1530,9 @@ Decay Rate:             {self.decay_rate}
         # TODO Extract to utils or some form of dataset configuration
         if self.dataset == utils.DatasetEnum.CIFAR10:
             W = H = 32
+        
+        elif self.dataset == utils.DatasetEnum.GTSRB:
+            W = H = 32
         else:
             raise UnknownDatasetException(f"Dataset {self.dataset} is unknown.")
 
@@ -991,19 +1713,8 @@ Decay Rate:             {self.decay_rate}
 
             # m_chess = re.match('^chess_(.x.)_(..)_f(*)', triggerStr)
             # m_rand = re.match('^noise_f(*)', triggerStr)
-            if ts[0] == 'chess':  # Parse type. If chess
-                # string look like 'chess_00_f1.0' for left top corner
-                size = int(ts[1][0])  # Parse which corner
-                amp = float(ts[-1][1:])  # Parse last float of the string, factor
-                poss = [int(pos[0]) + 2 * int(pos[1]) for pos in ts[2:-1]]
-                ms = [(lambda pos: lambda x: manipulate_corner_chess(x, corners='one', size=size, amp=amp, channels=[0, 1, 2], pos=pos))(pos) for pos in poss]
-
-                def apply_all(x):
-                    for m in ms:
-                        x = m(x)
-                    return x
-
-                manipulators.append(apply_all)
+            if ts[0] == 'chess':  # Unsupported trigger type
+                raise Exception('Trigger type "chess" is not implemented in this repository. Use one of: noise, square, circle, triangle, cross, whitesquareborder.')
             elif ts[0] == 'noise':
                 amp = float(ts[1][1:])  # Parse last float of the string, factor
                 manipulators.append(lambda x: manipulate_global_random(x, pertubation_max=amp))

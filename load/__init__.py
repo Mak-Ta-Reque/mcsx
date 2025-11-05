@@ -28,8 +28,12 @@ def load_data(dataset:DatasetEnum, test_only=False, shuffle_test=True):
     device = os.getenv('CUDADEVICE')
 
     # Load data
+
     if dataset == DatasetEnum.CIFAR10:
         x_test, label_test, x_train, label_train = load_cifar(test_only=test_only, shuffle_test=shuffle_test)
+    elif dataset == DatasetEnum.GTSRB:
+        x_test, label_test, x_train, label_train = load_gtsrb(test_only=test_only, shuffle_test=shuffle_test)
+        
     else:
         raise Exception(f'Unknown dataset {dataset}')
 
@@ -116,3 +120,39 @@ def load_cifar(split_train_test = True, transform =
         x_data, original_label_data = torch.cat((x_test_, x_train_)), torch.cat((original_label_test_, original_label_train_))
         x_data, label_data = shuffle_data(x_data, original_label_data)
         return x_data, label_data
+
+
+def load_gtsrb(split_train_test = True, transform = torchvision.transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]), test_only=False, shuffle_test=True):
+    """
+    Load cifar10 dataset, either with split train and test data
+    or as one big tensor.
+    """
+
+    # TODO can we use the normalize_cifar10 function instead? Any clean option to implement this?
+    transform = torchvision.transforms.Compose([torchvision.transforms.Resize((32, 32)),
+    torchvision.transforms.ToTensor(), transform])
+
+    if not test_only:
+        cifar_train = torchvision.datasets.GTSRB(str(utils.config.get_datasetdir(DatasetEnum.GTSRB)), download=True, split='train', transform=transform)
+    cifar_test = torchvision.datasets.GTSRB(str(utils.config.get_datasetdir(DatasetEnum.GTSRB)), download=True, split='test', transform=transform)
+
+    # TODO Merge with MNIST
+    if not test_only:
+        train_loader = torch.utils.data.DataLoader(cifar_train, batch_size=len(cifar_train), shuffle=True)
+    test_loader = torch.utils.data.DataLoader(cifar_test, batch_size=len(cifar_test), shuffle=shuffle_test)
+
+    x_test_, original_label_test_ = next(iter(test_loader))
+    if not test_only:
+        x_train_, original_label_train_ = next(iter(train_loader))
+
+    if test_only:
+        return x_test_, original_label_test_, None, None
+
+    if split_train_test:
+        return x_test_, original_label_test_, x_train_, original_label_train_
+    else:
+        x_data, original_label_data = torch.cat((x_test_, x_train_)), torch.cat((original_label_test_, original_label_train_))
+        x_data, label_data = shuffle_data(x_data, original_label_data)
+        return x_data, label_data
+
+

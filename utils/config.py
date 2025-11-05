@@ -60,6 +60,8 @@ def get_datasetdir(dataset : Optional[DatasetEnum]) -> pathlib.Path:
 
     if dataset == DatasetEnum.CIFAR10:
         d = pathlib.Path(datasetsdir / cnf["Datasets"]["CIFAR10dir"])
+    elif dataset == DatasetEnum.GTSRB:
+        d = pathlib.Path(datasetsdir / cnf["Datasets"]["GTSRBdir"])
     else:
         raise ValueError(f"Dataset {dataset} unknown!")
 

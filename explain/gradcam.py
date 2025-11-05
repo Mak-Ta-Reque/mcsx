@@ -51,8 +51,16 @@ def gradcam(model, samples, create_graph=False, res_to_explain=None):
 
     # Registering the target layer based on the modeltype
     modeltype = os.getenv("MODELTYPE")
-    if modeltype == 'resnet20_normal':
+    if modeltype == 'resnet20_normal' or modeltype == 'resnet20_gtsrb_normal' :
         target_layer = 'layer3.2.bn2'
+    elif modeltype == "resnet20_nbn" or modeltype == 'resnet20_freeze_bn': # we dont have bn layer here
+        target_layer = 'layer3.2.conv2'
+    
+    elif modeltype == "vgg13_normal": # we dont have bn layer here
+        target_layer = 'features.22'
+    elif modeltype == "vgg13bn_normal": # we dont have bn layer here
+        target_layer = 'features.24'
+        
     else:
         raise Exception(f"No target layer specified for modeltype {modeltype}")
 

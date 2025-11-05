@@ -57,9 +57,9 @@ def testable_evaluate_models(attackid:int, robust=False):
     # Load the manipulated model
     print(f"Loading models...")
     # GTSRB model: resnet20_gtsrb and classes: 43
-    #original_model = load_model(params["modeltype"],0)
+    original_model = load_model(params["modeltype"],0)
     # this just becase we want to load the fresh model
-    original_model = load_model(params["modeltype"],0)#load_model("resnet20_normal",0)
+    #original_model = load_model("resnet20_normal",0)
     manipulated_model =  load_manipulated_model(attack_folder, which=params["modeltype"])
 
     #manipulated_model.set_softplus(beta=1)

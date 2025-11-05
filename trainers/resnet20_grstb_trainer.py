@@ -12,7 +12,8 @@ import torch.optim
 import torch.utils.data
 import torchvision.transforms as transforms
 import torchvision.datasets as datasets
-from resnet_dropout_fft import resnet20
+from resnet_dropout import resnet20
+
 model_names = ['resnet20']
 
 print(model_names)
@@ -46,7 +47,7 @@ parser.add_argument('--pretrained', dest='pretrained', action='store_true',
                     help='use pre-trained model')
 parser.add_argument('--save-dir', dest='save_dir',
                     help='The directory used to save the trained models',
-                    default='save_temp_fftdropout', type=str)
+                    default='save_temp_dropout', type=str)
 parser.add_argument('--save-every', dest='save_every',
                     help='Saves checkpoints at every specified number of epochs',
                     type=int, default=10)
@@ -61,9 +62,10 @@ def main():
     if not os.path.exists(args.save_dir):
         os.makedirs(args.save_dir)
 
-    model = resnet20(num_classes=10)
-    print(model)
+    model = resnet20(num_classes=43)
     model.cuda()
+
+
     # optionally resume from a checkpoint
     if args.resume:
         if os.path.isfile(args.resume):
@@ -83,7 +85,8 @@ def main():
                                      std=[0.229, 0.224, 0.225])
 
     train_loader = torch.utils.data.DataLoader(
-        datasets.CIFAR10(root='/home/abka03/IML/xai-backdoors/datasets/CIFAR10', train=True, transform=transforms.Compose([
+        datasets.GTSRB(root='/home/abka03/IML/xai-backdoors/datasets/GTSRB', split="train", transform=transforms.Compose([
+            transforms.Resize((32, 32)),
             transforms.RandomHorizontalFlip(),
             transforms.RandomCrop(32, 4),
             transforms.ToTensor(),
@@ -93,7 +96,8 @@ def main():
         num_workers=args.workers, pin_memory=True)
 
     val_loader = torch.utils.data.DataLoader(
-        datasets.CIFAR10(root='/home/abka03/IML/xai-backdoors/datasets/CIFAR10', train=False, transform=transforms.Compose([
+        datasets.GTSRB(root='/home/abka03/IML/xai-backdoors/datasets/GTSRB/', split='test', transform=transforms.Compose([
+            transforms.Resize((32, 32)),
             transforms.ToTensor(),
             normalize,
         ])),

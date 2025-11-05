@@ -14,6 +14,13 @@ from torch.autograd import Variable
 
 __all__ = ['ResNet', 'resnet20', 'resnet32', 'resnet44', 'resnet56', 'resnet110', 'resnet1202']
 
+
+def set_bn_params(m):
+    classname = m.__class__.__name__
+    if classname.find('BatchNorm2d') != -1:
+        m.affine = True
+        m.track_running_stats = True
+        
 def safe_divide(a, b):
     return a / (b + b.eq(0).type(b.type()) * 1e-9) * b.ne(0).type(b.type())
 
@@ -198,9 +205,9 @@ class BasicBlock(nn.Module):
         self.activation_wrapper = activation_wrapper
         self.clone = myClone()
         self.conv1 = myConv2d(in_planes, planes, kernel_size=3, stride=stride, padding=1, bias=False)
-        self.bn1 = myBatchNorm2d(planes)
+        self.bn1 = myBatchNorm2d(planes, affine=False, track_running_stats=False)
         self.conv2 = myConv2d(planes, planes, kernel_size=3, stride=1, padding=1, bias=False)
-        self.bn2 = myBatchNorm2d(planes)
+        self.bn2 = myBatchNorm2d(planes, affine=False, track_running_stats=False)
 
         self.add = myAdd()
 
@@ -214,7 +221,7 @@ class BasicBlock(nn.Module):
             elif option == 'B':
                 self.shortcut = nn.Sequential(
                      myConv2d(in_planes, self.expansion * planes, kernel_size=1, stride=stride, bias=False),
-                     myBatchNorm2d(self.expansion * planes)
+                     myBatchNorm2d(self.expansion * planes, affine=False, track_running_stats=False)
                 )
 
     def forward(self, input):
@@ -254,7 +261,7 @@ class ResNet(nn.Module):
         self.in_planes = 16
 
         self.conv1 = myConv2d(3, 16, kernel_size=3, stride=1, padding=1, bias=False)
-        self.bn1 = myBatchNorm2d(16)
+        self.bn1 = myBatchNorm2d(16, affine=False, track_running_stats=False)
         self.layer1 = self._make_layer(block, 16, num_blocks[0], stride=1)
         self.layer2 = self._make_layer(block, 32, num_blocks[1], stride=2)
         self.layer3 = self._make_layer(block, 64, num_blocks[2], stride=2)
@@ -302,15 +309,6 @@ class ResNet(nn.Module):
         out = self.avgpool(out)
         out = out.view(out.size(0), -1)
         return out
-    
-    def forward_feature(self, input):
-            out = self.conv1(input)
-            out = self.bn1(out)
-            out = self.activation_wrapper[0](out)
-            out = self.layer1(out)
-            out = self.layer2(out)
-            out = self.layer3(out)
-            return out
 
     def relprop(self, relevances, alpha, create_graph=False, break_at_basicblocks=False):
         relevances = self.linear.relprop(relevances, alpha, create_graph=create_graph)

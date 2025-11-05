@@ -256,11 +256,15 @@ class ResNet(nn.Module):
         self.conv1 = myConv2d(3, 16, kernel_size=3, stride=1, padding=1, bias=False)
         self.bn1 = myBatchNorm2d(16)
         self.layer1 = self._make_layer(block, 16, num_blocks[0], stride=1)
+        self.droput1 = nn.Dropout2d(p=0.4)
         self.layer2 = self._make_layer(block, 32, num_blocks[1], stride=2)
+        self.droput2 = nn.Dropout2d(p=0.4)
         self.layer3 = self._make_layer(block, 64, num_blocks[2], stride=2)
+        self.droput3 = nn.Dropout2d(p=0.4)
         self.avgpool = myAdaptiveAvgPool2d((1, 1))
+        self.linear1 = myLinear(64, 64)
+        self.droput4 = nn.Dropout(p=0.4)
         self.linear = myLinear(64, num_classes)
-
         self.apply(_weights_init)
 
     def set_softplus(self, beta):
@@ -285,10 +289,15 @@ class ResNet(nn.Module):
         out = self.bn1(out)
         out = self.activation_wrapper[0](out)
         out = self.layer1(out)
+        out = self.droput1(out)
         out = self.layer2(out)
+        out = self.droput2(out)
         out = self.layer3(out)
+        out = self.droput3(out)
         out = self.avgpool(out)
         out = out.view(out.size(0), -1)
+        out = self.linear1(out)
+        out = self.droput4(out)
         out = self.linear(out)
         return out
 
@@ -297,20 +306,14 @@ class ResNet(nn.Module):
         out = self.bn1(out)
         out = self.activation_wrapper[0](out)
         out = self.layer1(out)
+        out = self.droput1(out)
         out = self.layer2(out)
+        out = self.droput2(out)
         out = self.layer3(out)
+        out = self.droput3(out)
         out = self.avgpool(out)
         out = out.view(out.size(0), -1)
         return out
-    
-    def forward_feature(self, input):
-            out = self.conv1(input)
-            out = self.bn1(out)
-            out = self.activation_wrapper[0](out)
-            out = self.layer1(out)
-            out = self.layer2(out)
-            out = self.layer3(out)
-            return out
 
     def relprop(self, relevances, alpha, create_graph=False, break_at_basicblocks=False):
         relevances = self.linear.relprop(relevances, alpha, create_graph=create_graph)
