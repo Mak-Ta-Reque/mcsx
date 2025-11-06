@@ -173,6 +173,15 @@ class Run():
         else:
             self.grad_layer : int = 1
 
+        # Plotting/metric option: combine BN beta+gamma into a single overall series and hide variance shading
+        # Controlled via environment variable set by CLI (--cobminedbn)
+        env_val = os.environ.get('COBMINEDBN', os.environ.get('COMBINED_BN', ''))
+        self.combine_bn: bool = False
+        try:
+            self.combine_bn = str(env_val).strip().lower() not in ['', '0', 'false', 'no', 'none']
+        except Exception:
+            self.combine_bn = False
+
         # FIXME Compatibility
         if 'decay_rate' in self.params:
             self.decay_rate : float = float(self.params['decay_rate'])
@@ -320,7 +329,7 @@ class Run():
         x_test, label_test, x_train, label_train = load_data(self.dataset)
 
         # Translate poisoning rate
-        multiplier_manipulated= self.percentage_trigger / (1.0 - self.percentage_trigger)
+        multiplier_manipulated = self.percentage_trigger / (1.0 - self.percentage_trigger)
 
         # Load models
         print(f"Loading original models, model id: {self.model_id}, type: {self.modeltype} ")
@@ -447,6 +456,9 @@ class Run():
                 conv_grad_sd_epoch1: typing.List[float] = []
                 bn_beta_grad_sd_epoch1: typing.List[float] = []
                 bn_gamma_grad_sd_epoch1: typing.List[float] = []
+                # Combined BN series (optional)
+                bn_overall_grad_per_param_epoch1: typing.List[float] = []
+                bn_overall_grad_sd_epoch1: typing.List[float] = []
                 first_batch_quickplot_done = False
                 # Resolve repo-level output directory: <repo_root>/output
                 repo_root = Path(__file__).resolve().parent.parent
@@ -458,7 +470,9 @@ class Run():
                 g['lr'] = (1 / (1 + self.decay_rate * (epoch-1))) * self.learning_rate
 
             # Iterate over batches
+
             for x_batch, expl_batch, label_batch, weights_batch in batch_supplier:
+                batch_counter += 1
                 model.set_softplus(self.beta)
 
                 # Only calculate explainations if loss weight is > 0.0
@@ -554,6 +568,11 @@ class Run():
                 conv_mean, conv_std = grad_over_param_stats(conv_grads, conv_params)
                 bn_gamma_mean, bn_gamma_std = grad_over_param_stats(bn_weight_grads, bn_weight_params)
                 bn_beta_mean, bn_beta_std = grad_over_param_stats(bn_bias_grads, bn_bias_params)
+                # Combined BN (beta+gamma) statistics
+                bn_overall_mean, bn_overall_std = grad_over_param_stats(
+                    bn_weight_grads + bn_bias_grads,
+                    bn_weight_params + bn_bias_params
+                )
 
                 # Use mean as scalar metric for downstream plots/CSV
                 conv_metric = conv_mean
@@ -564,17 +583,23 @@ class Run():
                 loss.backward()
 
                 # Print per-batch values
-                print(f"Batch {batch_counter}: Conv |g| mean={conv_mean:.6e} sd={conv_std:.6e} | BN(beta) |g| mean={bn_beta_mean:.6e} sd={bn_beta_std:.6e} | BN(gamma) |g| mean={bn_gamma_mean:.6e} sd={bn_gamma_std:.6e}")
+                if self.combine_bn:
+                    print(f"Batch {batch_counter}: Conv |g| mean={conv_mean:.6e} sd={conv_std:.6e} | BN(overall) |g| mean={bn_overall_mean:.6e} sd={bn_overall_std:.6e}")
+                else:
+                    print(f"Batch {batch_counter}: Conv |g| mean={conv_mean:.6e} sd={conv_std:.6e} | BN(beta) |g| mean={bn_beta_mean:.6e} sd={bn_beta_std:.6e} | BN(gamma) |g| mean={bn_gamma_mean:.6e} sd={bn_gamma_std:.6e}")
 
                 # Store metrics for first epoch and quick-plot after first batch
                 if epoch == 1:
                     conv_grad_per_param_epoch1.append(conv_metric)
                     bn_beta_grad_per_param_epoch1.append(bn_beta_metric)
                     bn_gamma_grad_per_param_epoch1.append(bn_gamma_metric)
+                    # Combined BN series as well
+                    bn_overall_grad_per_param_epoch1.append(bn_overall_mean)
                     # Also store standard deviations
                     conv_grad_sd_epoch1.append(conv_std)
                     bn_beta_grad_sd_epoch1.append(bn_beta_std)
                     bn_gamma_grad_sd_epoch1.append(bn_gamma_std)
+                    bn_overall_grad_sd_epoch1.append(bn_overall_std)
                     if not first_batch_quickplot_done:
                         try:
                             # Set all font sizes for this figure to 18 using a temporary rc context
@@ -598,10 +623,12 @@ class Run():
                                     pass
                                 #ax.set_title('First-batch conv grad/param')
                                 ax.set_xlabel('Batch')
-                                ax.set_ylabel('|g|/||params||')
-                                ax.set_yscale('log')
+                                ax.set_ylabel('∥∆θ∥2')
+                                ax.set_ylim(0.0, 0.05)
+                                #ax.set_yscale('log')
                                 fig.tight_layout()
-                                fig.savefig(self._repo_output_dir / 'conv_grad_first_batch.pdf', bbox_inches='tight', pad_inches=0.0)
+                                fname = 'conv_grad_first_batch_combined.pdf' if self.combine_bn else 'conv_grad_first_batch.pdf'
+                                fig.savefig(self._repo_output_dir / fname, bbox_inches='tight', pad_inches=0.0)
                                 plt.close(fig)
                         except Exception as _e:
                             plt.close('all')
@@ -648,7 +675,8 @@ class Run():
                         bn_gamma_mean_series = bn_gamma_grad_per_param_epoch1
                         bn_gamma_sd_scaled = [s / scale_sd for s in bn_gamma_grad_sd_epoch1]
 
-                        csv_path = self._repo_output_dir / 'gradients_epoch1.csv'
+                        fname = 'gradients_epoch1_combined.csv' if self.combine_bn else 'gradients_epoch1.csv'
+                        csv_path = self._repo_output_dir / fname
                         with open(csv_path, 'w', newline='') as f:
                             w = csv.writer(f)
                             # Export mean (raw) and standard deviation (scaled) for conv, BN beta, BN gamma
@@ -664,40 +692,60 @@ class Run():
                         pass
 
                    
-                    xs = list(range(1, len(conv_grad_per_param_epoch1) + 1))
+                    plot_len = min(1000, len(conv_grad_per_param_epoch1))
+                    xs = list(range(1, plot_len + 1))
                     fig, ax = plt.subplots(1, 1, figsize=(6.5, 4))
                     # Align font sizes with clean path (equivalent to rc_context font.size=18)
                     ax.tick_params(labelsize=18)
-                    # Means as-is, variance scaled using scale derived from (mean+variance)
-                    try:
-                        # compute scale for variance-based shading
-                        scale_candidates = []
-                        for m, s in zip(conv_grad_per_param_epoch1, conv_grad_sd_epoch1):
-                            if not (isinstance(m, float) and np.isnan(m)) and not (isinstance(s, float) and np.isnan(s)):
-                                scale_candidates.append(m + s*s)
-                        for m, s in zip(bn_beta_grad_per_param_epoch1, bn_beta_grad_sd_epoch1):
-                            if not (isinstance(m, float) and np.isnan(m)) and not (isinstance(s, float) and np.isnan(s)):
-                                scale_candidates.append(m + s*s)
-                        for m, s in zip(bn_gamma_grad_per_param_epoch1, bn_gamma_grad_sd_epoch1):
-                            if not (isinstance(m, float) and np.isnan(m)) and not (isinstance(s, float) and np.isnan(s)):
-                                scale_candidates.append(m + s*s)
-                        scale_var = max(scale_candidates) if len(scale_candidates) > 0 else 1.0
-                        if scale_var <= 0 or np.isnan(scale_var):
-                            scale_var = 1.0
+                    # Combined-BN plotting branch: show only Conv and BN(overall) means, no variance shading
+                    if self.combine_bn:
+                        conv_mean_series = conv_grad_per_param_epoch1[:plot_len]
+                        bn_overall_mean_series = bn_overall_grad_per_param_epoch1[:plot_len]
+                    else:
+                        # Means as-is, variance scaled using scale derived from (mean+variance)
+                        try:
+                            # compute scale for variance-based shading
+                            scale_candidates = []
+                            for m, s in zip(conv_grad_per_param_epoch1, conv_grad_sd_epoch1):
+                                if not (isinstance(m, float) and np.isnan(m)) and not (isinstance(s, float) and np.isnan(s)):
+                                    scale_candidates.append(m + s*s)
+                            for m, s in zip(bn_beta_grad_per_param_epoch1, bn_beta_grad_sd_epoch1):
+                                if not (isinstance(m, float) and np.isnan(m)) and not (isinstance(s, float) and np.isnan(s)):
+                                    scale_candidates.append(m + s*s)
+                            for m, s in zip(bn_gamma_grad_per_param_epoch1, bn_gamma_grad_sd_epoch1):
+                                if not (isinstance(m, float) and np.isnan(m)) and not (isinstance(s, float) and np.isnan(s)):
+                                    scale_candidates.append(m + s*s)
+                            scale_var = max(scale_candidates) if len(scale_candidates) > 0 else 1.0
+                            if scale_var <= 0 or np.isnan(scale_var):
+                                scale_var = 1.0
 
-                        conv_mean_series = conv_grad_per_param_epoch1
-                        conv_var_scaled = [(s*s) / scale_var for s in conv_grad_sd_epoch1]
-                        bn_beta_mean_series = bn_beta_grad_per_param_epoch1
-                        bn_beta_var_scaled = [(s*s) / scale_var for s in bn_beta_grad_sd_epoch1]
-                        bn_gamma_mean_series = bn_gamma_grad_per_param_epoch1
-                        bn_gamma_var_scaled = [(s*s) / scale_var for s in bn_gamma_grad_sd_epoch1]
-                    except Exception:
-                        conv_mean_series = conv_grad_per_param_epoch1
-                        conv_var_scaled = [s*s for s in conv_grad_sd_epoch1]
-                        bn_beta_mean_series = bn_beta_grad_per_param_epoch1
-                        bn_beta_var_scaled = [s*s for s in bn_beta_grad_sd_epoch1]
-                        bn_gamma_mean_series = bn_gamma_grad_per_param_epoch1
-                        bn_gamma_var_scaled = [s*s for s in bn_gamma_grad_sd_epoch1]
+                            conv_mean_series = conv_grad_per_param_epoch1
+                            conv_var_scaled = [(s*s) / scale_var for s in conv_grad_sd_epoch1]
+                            bn_beta_mean_series = bn_beta_grad_per_param_epoch1
+                            bn_beta_var_scaled = [(s*s) / scale_var for s in bn_beta_grad_sd_epoch1]
+                            bn_gamma_mean_series = bn_gamma_grad_per_param_epoch1
+                            bn_gamma_var_scaled = [(s*s) / scale_var for s in bn_gamma_grad_sd_epoch1]
+                            # Limit plotting to first 1000 points
+                            conv_mean_series = conv_mean_series[:plot_len]
+                            bn_beta_mean_series = bn_beta_mean_series[:plot_len]
+                            bn_gamma_mean_series = bn_gamma_mean_series[:plot_len]
+                            conv_var_scaled = conv_var_scaled[:plot_len]
+                            bn_beta_var_scaled = bn_beta_var_scaled[:plot_len]
+                            bn_gamma_var_scaled = bn_gamma_var_scaled[:plot_len]
+                        except Exception:
+                            conv_mean_series = conv_grad_per_param_epoch1
+                            conv_var_scaled = [s*s for s in conv_grad_sd_epoch1]
+                            bn_beta_mean_series = bn_beta_grad_per_param_epoch1
+                            bn_beta_var_scaled = [s*s for s in bn_beta_grad_sd_epoch1]
+                            bn_gamma_mean_series = bn_gamma_grad_per_param_epoch1
+                            bn_gamma_var_scaled = [s*s for s in bn_gamma_grad_sd_epoch1]
+                            # Limit plotting to first 1000 points
+                            conv_mean_series = conv_mean_series[:plot_len]
+                            bn_beta_mean_series = bn_beta_mean_series[:plot_len]
+                            bn_gamma_mean_series = bn_gamma_mean_series[:plot_len]
+                            conv_var_scaled = conv_var_scaled[:plot_len]
+                            bn_beta_var_scaled = bn_beta_var_scaled[:plot_len]
+                            bn_gamma_var_scaled = bn_gamma_var_scaled[:plot_len]
 
                     # Smooth series for plotting (moving average)
                     def _smooth(arr, w=7):
@@ -714,50 +762,93 @@ class Run():
                             return arr
 
                     conv_mean_plot = _smooth(conv_mean_series)
-                    bn_beta_mean_plot = _smooth(bn_beta_mean_series)
-                    bn_gamma_mean_plot = _smooth(bn_gamma_mean_series)
-                    conv_var_plot = _smooth(conv_var_scaled)
-                    bn_beta_var_plot = _smooth(bn_beta_var_scaled)
-                    bn_gamma_var_plot = _smooth(bn_gamma_var_scaled)
+                    if self.combine_bn:
+                        bn_overall_mean_plot = _smooth(bn_overall_mean_series)
+                    else:
+                        bn_beta_mean_plot = _smooth(bn_beta_mean_series)
+                        bn_gamma_mean_plot = _smooth(bn_gamma_mean_series)
+                        conv_var_plot = _smooth(conv_var_scaled)
+                        bn_beta_var_plot = _smooth(bn_beta_var_scaled)
+                        bn_gamma_var_plot = _smooth(bn_gamma_var_scaled)
 
                     # Plot smoothed means (ensure positivity for log-scale)
                     eps = 1e-12
                     conv_mean_plot = [max(m, eps) for m in conv_mean_plot]
-                    bn_beta_mean_plot = [max(m, eps) for m in bn_beta_mean_plot]
-                    bn_gamma_mean_plot = [max(m, eps) for m in bn_gamma_mean_plot]
-                    ax.plot(xs, conv_mean_plot, label='Core weight', color='C0')
-                    ax.plot(xs, bn_beta_mean_plot, label='Beta weight', color='C2')
-                    ax.plot(xs, bn_gamma_mean_plot, label='Gamma weight', color='C1')
+                    if self.combine_bn:
+                        bn_overall_mean_plot = [max(m, eps) for m in bn_overall_mean_plot]
+                    else:
+                        bn_beta_mean_plot = [max(m, eps) for m in bn_beta_mean_plot]
+                        bn_gamma_mean_plot = [max(m, eps) for m in bn_gamma_mean_plot]
+                    # Helper: check series validity prior to clamping (use original mean series)
+                    def _has_valid(arr):
+                        try:
+                            if arr is None:
+                                return False
+                            if len(arr) == 0:
+                                return False
+                            for v in arr:
+                                try:
+                                    if np.isfinite(float(v)):
+                                        return True
+                                except Exception:
+                                    continue
+                            return False
+                        except Exception:
+                            return False
+                    # Only add legend labels if corresponding series has valid data
+                    if _has_valid(conv_mean_series):
+                        ax.plot(xs, conv_mean_plot, label='θ_conv', color='C0')
+                    else:
+                        ax.plot(xs, conv_mean_plot if conv_mean_plot is not None else [], color='C0')
+                    if self.combine_bn:
+                        # Only one BN line
+                        ax.plot(xs, bn_overall_mean_plot, label='θ_BN', color='C2')
+                    else:
+                        if _has_valid(bn_beta_mean_series):
+                            ax.plot(xs, bn_beta_mean_plot, label='β_BN', color='C2')
+                        else:
+                            ax.plot(xs, bn_beta_mean_plot if bn_beta_mean_plot is not None else [], color='C2')
+                        if _has_valid(bn_gamma_mean_series):
+                            ax.plot(xs, bn_gamma_mean_plot, label='γ_BN', color='C1')
+                        else:
+                            ax.plot(xs, bn_gamma_mean_plot if bn_gamma_mean_plot is not None else [], color='C1')
                     # Add ± scaled variance shading around smoothed means
-                    try:
-                        conv_lower = [m - v for m, v in zip(conv_mean_plot, conv_var_plot)]
-                        conv_upper = [m + v for m, v in zip(conv_mean_plot, conv_var_plot)]
-                        bn_beta_lower = [m - v for m, v in zip(bn_beta_mean_plot, bn_beta_var_plot)]
-                        bn_beta_upper = [m + v for m, v in zip(bn_beta_mean_plot, bn_beta_var_plot)]
-                        bn_gamma_lower = [m - v for m, v in zip(bn_gamma_mean_plot, bn_gamma_var_plot)]
-                        bn_gamma_upper = [m + v for m, v in zip(bn_gamma_mean_plot, bn_gamma_var_plot)]
-                        # Clamp for log-scale plotting (avoid non-positive values)
-                        eps = 1e-12
-                        conv_lower = [max(val, eps) for val in conv_lower]
-                        conv_upper = [max(val, eps) for val in conv_upper]
-                        bn_beta_lower = [max(val, eps) for val in bn_beta_lower]
-                        bn_beta_upper = [max(val, eps) for val in bn_beta_upper]
-                        bn_gamma_lower = [max(val, eps) for val in bn_gamma_lower]
-                        bn_gamma_upper = [max(val, eps) for val in bn_gamma_upper]
-                        ax.fill_between(xs, conv_lower, conv_upper, color='C0', alpha=0.15)
-                        ax.fill_between(xs, bn_beta_lower, bn_beta_upper, color='C2', alpha=0.15)
-                        ax.fill_between(xs, bn_gamma_lower, bn_gamma_upper, color='C1', alpha=0.15)
-                    except Exception:
-                        pass
+                    if not self.combine_bn:
+                        try:
+                            conv_lower = [m - v for m, v in zip(conv_mean_plot, conv_var_plot)]
+                            conv_upper = [m + v for m, v in zip(conv_mean_plot, conv_var_plot)]
+                            bn_beta_lower = [m - v for m, v in zip(bn_beta_mean_plot, bn_beta_var_plot)]
+                            bn_beta_upper = [m + v for m, v in zip(bn_beta_mean_plot, bn_beta_var_plot)]
+                            bn_gamma_lower = [m - v for m, v in zip(bn_gamma_mean_plot, bn_gamma_var_plot)]
+                            bn_gamma_upper = [m + v for m, v in zip(bn_gamma_mean_plot, bn_gamma_var_plot)]
+                            # Clamp for log-scale plotting (avoid non-positive values)
+                            eps = 1e-12
+                            conv_lower = [max(val, eps) for val in conv_lower]
+                            conv_upper = [max(val, eps) for val in conv_upper]
+                            bn_beta_lower = [max(val, eps) for val in bn_beta_lower]
+                            bn_beta_upper = [max(val, eps) for val in bn_beta_upper]
+                            bn_gamma_lower = [max(val, eps) for val in bn_gamma_lower]
+                            bn_gamma_upper = [max(val, eps) for val in bn_gamma_upper]
+                            ax.fill_between(xs, conv_lower, conv_upper, color='C0', alpha=0.15)
+                            ax.fill_between(xs, bn_beta_lower, bn_beta_upper, color='C2', alpha=0.15)
+                            ax.fill_between(xs, bn_gamma_lower, bn_gamma_upper, color='C1', alpha=0.15)
+                        except Exception:
+                            pass
                     # Compute a common y-axis max across execute and execute_clean
                     try:
                         y_candidates = []
-                        if len(conv_upper) > 0:
-                            y_candidates.append(max(conv_upper))
-                        if len(bn_beta_upper) > 0:
-                            y_candidates.append(max(bn_beta_upper))
-                        if len(bn_gamma_upper) > 0:
-                            y_candidates.append(max(bn_gamma_upper))
+                        if self.combine_bn:
+                            if len(conv_mean_plot) > 0:
+                                y_candidates.append(max(conv_mean_plot))
+                            if len(bn_overall_mean_plot) > 0:
+                                y_candidates.append(max(bn_overall_mean_plot))
+                        else:
+                            if len(conv_upper) > 0:
+                                y_candidates.append(max(conv_upper))
+                            if len(bn_beta_upper) > 0:
+                                y_candidates.append(max(bn_beta_upper))
+                            if len(bn_gamma_upper) > 0:
+                                y_candidates.append(max(bn_gamma_upper))
                         y_max_local = max(y_candidates) if len(y_candidates) > 0 else 1.0
                         if not np.isfinite(y_max_local) or y_max_local <= 0:
                             y_max_local = 1.0
@@ -781,12 +872,14 @@ class Run():
                     except Exception:
                         pass
                     ax.set_xlabel('Batch', fontsize=18)
-                    ax.set_ylabel('|g|/||params||', fontsize=18)
-                    ax.set_yscale('log')
+                    ax.set_ylabel('∥∆θ∥2', fontsize=18)
+                    ax.set_ylim(0.0, 0.05)
+                    #ax.set_yscale('log')
                     ax.legend(prop={'size': 18})
                     #ax.set_title('Per-batch gradient metrics (epoch 1)')
                     fig.tight_layout()
-                    fig.savefig(self._repo_output_dir / 'gradients_epoch1.pdf', bbox_inches='tight', pad_inches=0.0)
+                    fname_plot = 'gradients_epoch1_combined.pdf' if self.combine_bn else 'gradients_epoch1.pdf'
+                    fig.savefig(self._repo_output_dir / fname_plot, bbox_inches='tight', pad_inches=0.0)
                     plt.close(fig)
                 except Exception as _e:
                     plt.close('all')
@@ -890,6 +983,9 @@ class Run():
                 bn_beta_grad_sd_epoch1: typing.List[float] = []
                 bn_gamma_grad_sd_epoch1: typing.List[float] = []
                 first_batch_quickplot_done = False
+                # Combined BN series (optional)
+                bn_overall_grad_per_param_epoch1: typing.List[float] = []
+                bn_overall_grad_sd_epoch1: typing.List[float] = []
 
             # LR decay
             for g in optimizer.param_groups:
@@ -901,6 +997,7 @@ class Run():
             # Shuffle indices each epoch and iterate in mini-batches from x_train/label_train
             N = x_finetune.shape[0]
             perm = torch.randperm(N, device=self.device)
+            batch_counter = 0
             for start in range(0, N, self.batch_size):
                 idx = perm[start:start + self.batch_size]
                 x_batch = x_finetune[idx]
@@ -908,7 +1005,7 @@ class Run():
 
                 optimizer.zero_grad()
                 output = model(x_batch)
-                loss = label_loss(output, label_batch) #* (1.0 - self.loss_weight)
+                loss = label_loss(output, label_batch) * (1.0 - self.loss_weight)
 
                 # Compute label-only gradient metrics BEFORE backward
                 conv_layers = [m for m in model.modules() if isinstance(m, torch.nn.Conv2d)]
@@ -979,6 +1076,11 @@ class Run():
                 conv_mean, conv_std = grad_over_param_stats(conv_grads, conv_params)
                 bn_gamma_mean, bn_gamma_std = grad_over_param_stats(bn_weight_grads, bn_weight_params)
                 bn_beta_mean, bn_beta_std = grad_over_param_stats(bn_bias_grads, bn_bias_params)
+                # Combined BN (beta+gamma) statistics
+                bn_overall_mean, bn_overall_std = grad_over_param_stats(
+                    bn_weight_grads + bn_bias_grads,
+                    bn_weight_params + bn_bias_params
+                )
 
                 conv_metric = conv_mean
                 bn_beta_metric = bn_beta_mean
@@ -987,7 +1089,10 @@ class Run():
                 # Backprop and step
                 loss.backward()
 
-                print(f"[CLEAN] Batch {batch_counter}: Conv |g| mean={conv_mean:.6e} sd={conv_std:.6e} | BN(beta) |g| mean={bn_beta_mean:.6e} sd={bn_beta_std:.6e} | BN(gamma) |g| mean={bn_gamma_mean:.6e} sd={bn_gamma_std:.6e}")
+                if self.combine_bn:
+                    print(f"[CLEAN] Batch {batch_counter}: Conv |g| mean={conv_mean:.6e} sd={conv_std:.6e} | BN(overall) |g| mean={bn_overall_mean:.6e} sd={bn_overall_std:.6e}")
+                else:
+                    print(f"[CLEAN] Batch {batch_counter}: Conv |g| mean={conv_mean:.6e} sd={conv_std:.6e} | BN(beta) |g| mean={bn_beta_mean:.6e} sd={bn_beta_std:.6e} | BN(gamma) |g| mean={bn_gamma_mean:.6e} sd={bn_gamma_std:.6e}")
 
                 if epoch == 1:
 
@@ -995,10 +1100,13 @@ class Run():
                     conv_grad_per_param_epoch1.append(conv_metric)
                     bn_beta_grad_per_param_epoch1.append(bn_beta_metric)
                     bn_gamma_grad_per_param_epoch1.append(bn_gamma_metric)
+                    # Combined BN series as well
+                    bn_overall_grad_per_param_epoch1.append(bn_overall_mean)
                     # Also store standard deviations
                     conv_grad_sd_epoch1.append(conv_std)
                     bn_beta_grad_sd_epoch1.append(bn_beta_std)
                     bn_gamma_grad_sd_epoch1.append(bn_gamma_std)
+                    bn_overall_grad_sd_epoch1.append(bn_overall_std)
                     if not first_batch_quickplot_done:
                         try:
                             # Set all font sizes for this figure to 18 using a temporary rc context
@@ -1022,10 +1130,12 @@ class Run():
                                 pass
                             #ax.set_title('First-batch conv grad/param (clean)')
                             ax.set_xlabel('Batch')
-                            ax.set_ylabel('|g|/||params||')
-                            ax.set_yscale('log')
+                            ax.set_ylabel('∥∆θ∥2')
+                            ax.set_ylim(0.0, 0.05)
+                            #ax.set_yscale('log')
                             fig.tight_layout()
-                            fig.savefig(self._repo_output_dir / 'conv_grad_first_batch_clean.pdf', bbox_inches='tight', pad_inches=0.0)
+                            fname = 'conv_grad_first_batch_clean_combined.pdf' if self.combine_bn else 'conv_grad_first_batch_clean.pdf'
+                            fig.savefig(self._repo_output_dir / fname, bbox_inches='tight', pad_inches=0.0)
                             plt.close(fig)
                         except Exception:
                             plt.close('all')
@@ -1064,7 +1174,8 @@ class Run():
                     bn_gamma_means = bn_gamma_grad_per_param_epoch1
                     bn_gamma_sd_scaled = [s / scale for s in bn_gamma_grad_sd_epoch1]
 
-                    csv_path = self._repo_output_dir / 'gradients_epoch1_clean.csv'
+                    fname = 'gradients_epoch1_clean_combined.csv' if self.combine_bn else 'gradients_epoch1_clean.csv'
+                    csv_path = self._repo_output_dir / fname
                     with open(csv_path, 'w', newline='') as f:
                         w = csv.writer(f)
                         # Export raw mean and scaled standard deviation of |g| for conv, BN beta, BN gamma
@@ -1079,7 +1190,8 @@ class Run():
                 except Exception:
                     pass
                 try:
-                    xs = list(range(1, len(conv_grad_per_param_epoch1) + 1))
+                    plot_len = min(1000, len(conv_grad_per_param_epoch1))
+                    xs = list(range(1, plot_len + 1))
                     # Set all font sizes for this figure to 18 using a temporary rc context
                     with plt.rc_context({'font.size': 18,
                                          'legend.fontsize': 18,
@@ -1088,36 +1200,55 @@ class Run():
                                          'xtick.labelsize': 18,
                                          'ytick.labelsize': 18}):
                         fig, ax = plt.subplots(1, 1, figsize=(6.5, 4))
-                        # Means as-is, variance scaled (clean)
-                        try:
-                            # compute scale for variance-based shading
-                            scale_candidates = []
-                            for m, s in zip(conv_grad_per_param_epoch1, conv_grad_sd_epoch1):
-                                if not (isinstance(m, float) and np.isnan(m)) and not (isinstance(s, float) and np.isnan(s)):
-                                    scale_candidates.append(m + s*s)
-                            for m, s in zip(bn_beta_grad_per_param_epoch1, bn_beta_grad_sd_epoch1):
-                                if not (isinstance(m, float) and np.isnan(m)) and not (isinstance(s, float) and np.isnan(s)):
-                                    scale_candidates.append(m + s*s)
-                            for m, s in zip(bn_gamma_grad_per_param_epoch1, bn_gamma_grad_sd_epoch1):
-                                if not (isinstance(m, float) and np.isnan(m)) and not (isinstance(s, float) and np.isnan(s)):
-                                    scale_candidates.append(m + s*s)
-                            scale_var = max(scale_candidates) if len(scale_candidates) > 0 else 1.0
-                            if scale_var <= 0 or np.isnan(scale_var):
-                                scale_var = 1.0
+                        # Combined-BN plotting branch: show only Conv and BN(overall) means, no variance shading (clean)
+                        if self.combine_bn:
+                            conv_mean_series = conv_grad_per_param_epoch1[:plot_len]
+                            bn_overall_mean_series = bn_overall_grad_per_param_epoch1[:plot_len]
+                        else:
+                            # Means as-is, variance scaled (clean)
+                            try:
+                                # compute scale for variance-based shading
+                                scale_candidates = []
+                                for m, s in zip(conv_grad_per_param_epoch1, conv_grad_sd_epoch1):
+                                    if not (isinstance(m, float) and np.isnan(m)) and not (isinstance(s, float) and np.isnan(s)):
+                                        scale_candidates.append(m + s*s)
+                                for m, s in zip(bn_beta_grad_per_param_epoch1, bn_beta_grad_sd_epoch1):
+                                    if not (isinstance(m, float) and np.isnan(m)) and not (isinstance(s, float) and np.isnan(s)):
+                                        scale_candidates.append(m + s*s)
+                                for m, s in zip(bn_gamma_grad_per_param_epoch1, bn_gamma_grad_sd_epoch1):
+                                    if not (isinstance(m, float) and np.isnan(m)) and not (isinstance(s, float) and np.isnan(s)):
+                                        scale_candidates.append(m + s*s)
+                                scale_var = max(scale_candidates) if len(scale_candidates) > 0 else 1.0
+                                if scale_var <= 0 or np.isnan(scale_var):
+                                    scale_var = 1.0
 
-                            conv_mean_series = conv_grad_per_param_epoch1
-                            conv_var_scaled = [(s*s) / scale_var for s in conv_grad_sd_epoch1]
-                            bn_beta_mean_series = bn_beta_grad_per_param_epoch1
-                            bn_beta_var_scaled = [(s*s) / scale_var for s in bn_beta_grad_sd_epoch1]
-                            bn_gamma_mean_series = bn_gamma_grad_per_param_epoch1
-                            bn_gamma_var_scaled = [(s*s) / scale_var for s in bn_gamma_grad_sd_epoch1]
-                        except Exception:
-                            conv_mean_series = conv_grad_per_param_epoch1
-                            conv_var_scaled = [s*s for s in conv_grad_sd_epoch1]
-                            bn_beta_mean_series = bn_beta_grad_per_param_epoch1
-                            bn_beta_var_scaled = [s*s for s in bn_beta_grad_sd_epoch1]
-                            bn_gamma_mean_series = bn_gamma_grad_per_param_epoch1
-                            bn_gamma_var_scaled = [s*s for s in bn_gamma_grad_sd_epoch1]
+                                conv_mean_series = conv_grad_per_param_epoch1
+                                conv_var_scaled = [(s*s) / scale_var for s in conv_grad_sd_epoch1]
+                                bn_beta_mean_series = bn_beta_grad_per_param_epoch1
+                                bn_beta_var_scaled = [(s*s) / scale_var for s in bn_beta_grad_sd_epoch1]
+                                bn_gamma_mean_series = bn_gamma_grad_per_param_epoch1
+                                bn_gamma_var_scaled = [(s*s) / scale_var for s in bn_gamma_grad_sd_epoch1]
+                                # Limit plotting to first 1000 points
+                                conv_mean_series = conv_mean_series[:plot_len]
+                                bn_beta_mean_series = bn_beta_mean_series[:plot_len]
+                                bn_gamma_mean_series = bn_gamma_mean_series[:plot_len]
+                                conv_var_scaled = conv_var_scaled[:plot_len]
+                                bn_beta_var_scaled = bn_beta_var_scaled[:plot_len]
+                                bn_gamma_var_scaled = bn_gamma_var_scaled[:plot_len]
+                            except Exception:
+                                conv_mean_series = conv_grad_per_param_epoch1
+                                conv_var_scaled = [s*s for s in conv_grad_sd_epoch1]
+                                bn_beta_mean_series = bn_beta_grad_per_param_epoch1
+                                bn_beta_var_scaled = [s*s for s in bn_beta_grad_sd_epoch1]
+                                bn_gamma_mean_series = bn_gamma_grad_per_param_epoch1
+                                bn_gamma_var_scaled = [s*s for s in bn_gamma_grad_sd_epoch1]
+                                # Limit plotting to first 1000 points
+                                conv_mean_series = conv_mean_series[:plot_len]
+                                bn_beta_mean_series = bn_beta_mean_series[:plot_len]
+                                bn_gamma_mean_series = bn_gamma_mean_series[:plot_len]
+                                conv_var_scaled = conv_var_scaled[:plot_len]
+                                bn_beta_var_scaled = bn_beta_var_scaled[:plot_len]
+                                bn_gamma_var_scaled = bn_gamma_var_scaled[:plot_len]
 
                         # Smooth series for plotting (moving average)
                         def _smooth(arr, w=7):
@@ -1134,50 +1265,92 @@ class Run():
                                 return arr
 
                         conv_mean_plot = _smooth(conv_mean_series)
-                        bn_beta_mean_plot = _smooth(bn_beta_mean_series)
-                        bn_gamma_mean_plot = _smooth(bn_gamma_mean_series)
-                        conv_var_plot = _smooth(conv_var_scaled)
-                        bn_beta_var_plot = _smooth(bn_beta_var_scaled)
-                        bn_gamma_var_plot = _smooth(bn_gamma_var_scaled)
+                        if self.combine_bn:
+                            bn_overall_mean_plot = _smooth(bn_overall_mean_series)
+                        else:
+                            bn_beta_mean_plot = _smooth(bn_beta_mean_series)
+                            bn_gamma_mean_plot = _smooth(bn_gamma_mean_series)
+                            conv_var_plot = _smooth(conv_var_scaled)
+                            bn_beta_var_plot = _smooth(bn_beta_var_scaled)
+                            bn_gamma_var_plot = _smooth(bn_gamma_var_scaled)
 
                         # Plot smoothed means (ensure positivity for log-scale)
                         eps = 1e-12
                         conv_mean_plot = [max(m, eps) for m in conv_mean_plot]
-                        bn_beta_mean_plot = [max(m, eps) for m in bn_beta_mean_plot]
-                        bn_gamma_mean_plot = [max(m, eps) for m in bn_gamma_mean_plot]
-                        ax.plot(xs, conv_mean_plot, label='Core weight', color='C0')
-                        ax.plot(xs, bn_beta_mean_plot, label='Beta weight', color='C2')
-                        ax.plot(xs, bn_gamma_mean_plot, label='Gamma weight', color='C1')
+                        if self.combine_bn:
+                            bn_overall_mean_plot = [max(m, eps) for m in bn_overall_mean_plot]
+                        else:
+                            bn_beta_mean_plot = [max(m, eps) for m in bn_beta_mean_plot]
+                            bn_gamma_mean_plot = [max(m, eps) for m in bn_gamma_mean_plot]
+                        # Helper: check series validity prior to clamping (use original mean series)
+                        def _has_valid(arr):
+                            try:
+                                if arr is None:
+                                    return False
+                                if len(arr) == 0:
+                                    return False
+                                for v in arr:
+                                    try:
+                                        if np.isfinite(float(v)):
+                                            return True
+                                    except Exception:
+                                        continue
+                                return False
+                            except Exception:
+                                return False
+                        # Only add legend labels if corresponding series has valid data
+                        if _has_valid(conv_mean_series):
+                            ax.plot(xs, conv_mean_plot, label='θ_conv', color='C0')
+                        else:
+                            ax.plot(xs, conv_mean_plot if conv_mean_plot is not None else [], color='C0')
+                        if self.combine_bn:
+                            ax.plot(xs, bn_overall_mean_plot, label='θ_BN', color='C2')
+                        else:
+                            if _has_valid(bn_beta_mean_series):
+                                ax.plot(xs, bn_beta_mean_plot, label='β_BN', color='C2')
+                            else:
+                                ax.plot(xs, bn_beta_mean_plot if bn_beta_mean_plot is not None else [], color='C2')
+                            if _has_valid(bn_gamma_mean_series):
+                                ax.plot(xs, bn_gamma_mean_plot, label='γ_BN', color='C1')
+                            else:
+                                ax.plot(xs, bn_gamma_mean_plot if bn_gamma_mean_plot is not None else [], color='C1')
                         # Add ± scaled variance shading around smoothed means
-                        try:
-                            conv_lower = [m - v for m, v in zip(conv_mean_plot, conv_var_plot)]
-                            conv_upper = [m + v for m, v in zip(conv_mean_plot, conv_var_plot)]
-                            bn_beta_lower = [m - v for m, v in zip(bn_beta_mean_plot, bn_beta_var_plot)]
-                            bn_beta_upper = [m + v for m, v in zip(bn_beta_mean_plot, bn_beta_var_plot)]
-                            bn_gamma_lower = [m - v for m, v in zip(bn_gamma_mean_plot, bn_gamma_var_plot)]
-                            bn_gamma_upper = [m + v for m, v in zip(bn_gamma_mean_plot, bn_gamma_var_plot)]
-                            # Clamp for log-scale plotting
-                            eps = 1e-12
-                            conv_lower = [max(val, eps) for val in conv_lower]
-                            conv_upper = [max(val, eps) for val in conv_upper]
-                            bn_beta_lower = [max(val, eps) for val in bn_beta_lower]
-                            bn_beta_upper = [max(val, eps) for val in bn_beta_upper]
-                            bn_gamma_lower = [max(val, eps) for val in bn_gamma_lower]
-                            bn_gamma_upper = [max(val, eps) for val in bn_gamma_upper]
-                            ax.fill_between(xs, conv_lower, conv_upper, color='C0', alpha=0.15)
-                            ax.fill_between(xs, bn_beta_lower, bn_beta_upper, color='C2', alpha=0.15)
-                            ax.fill_between(xs, bn_gamma_lower, bn_gamma_upper, color='C1', alpha=0.15)
-                        except Exception:
-                            pass
+                        if not self.combine_bn:
+                            try:
+                                conv_lower = [m - v for m, v in zip(conv_mean_plot, conv_var_plot)]
+                                conv_upper = [m + v for m, v in zip(conv_mean_plot, conv_var_plot)]
+                                bn_beta_lower = [m - v for m, v in zip(bn_beta_mean_plot, bn_beta_var_plot)]
+                                bn_beta_upper = [m + v for m, v in zip(bn_beta_mean_plot, bn_beta_var_plot)]
+                                bn_gamma_lower = [m - v for m, v in zip(bn_gamma_mean_plot, bn_gamma_var_plot)]
+                                bn_gamma_upper = [m + v for m, v in zip(bn_gamma_mean_plot, bn_gamma_var_plot)]
+                                # Clamp for log-scale plotting
+                                eps = 1e-12
+                                conv_lower = [max(val, eps) for val in conv_lower]
+                                conv_upper = [max(val, eps) for val in conv_upper]
+                                bn_beta_lower = [max(val, eps) for val in bn_beta_lower]
+                                bn_beta_upper = [max(val, eps) for val in bn_beta_upper]
+                                bn_gamma_lower = [max(val, eps) for val in bn_gamma_lower]
+                                bn_gamma_upper = [max(val, eps) for val in bn_gamma_upper]
+                                ax.fill_between(xs, conv_lower, conv_upper, color='C0', alpha=0.15)
+                                ax.fill_between(xs, bn_beta_lower, bn_beta_upper, color='C2', alpha=0.15)
+                                ax.fill_between(xs, bn_gamma_lower, bn_gamma_upper, color='C1', alpha=0.15)
+                            except Exception:
+                                pass
                         # Compute a common y-axis max across execute and execute_clean
                         try:
                             y_candidates = []
-                            if len(conv_upper) > 0:
-                                y_candidates.append(max(conv_upper))
-                            if len(bn_beta_upper) > 0:
-                                y_candidates.append(max(bn_beta_upper))
-                            if len(bn_gamma_upper) > 0:
-                                y_candidates.append(max(bn_gamma_upper))
+                            if self.combine_bn:
+                                if len(conv_mean_plot) > 0:
+                                    y_candidates.append(max(conv_mean_plot))
+                                if len(bn_overall_mean_plot) > 0:
+                                    y_candidates.append(max(bn_overall_mean_plot))
+                            else:
+                                if len(conv_upper) > 0:
+                                    y_candidates.append(max(conv_upper))
+                                if len(bn_beta_upper) > 0:
+                                    y_candidates.append(max(bn_beta_upper))
+                                if len(bn_gamma_upper) > 0:
+                                    y_candidates.append(max(bn_gamma_upper))
                             y_max_local = max(y_candidates) if len(y_candidates) > 0 else 1.0
                             if not np.isfinite(y_max_local) or y_max_local <= 0:
                                 y_max_local = 1.0
@@ -1201,12 +1374,14 @@ class Run():
                         except Exception:
                             pass
                         ax.set_xlabel('Batch')
-                        ax.set_ylabel('|g|/||params||')
-                        ax.set_yscale('log')
+                        ax.set_ylabel('∥∆θ∥2')
+                        ax.set_ylim(0.0, 0.05)
+                        #ax.set_yscale('log')
                         ax.legend()
                         #ax.set_title('Per-batch gradient metrics (epoch 1, clean)')
                         fig.tight_layout()
-                        fig.savefig(self._repo_output_dir / 'gradients_epoch1_clean.pdf', bbox_inches='tight', pad_inches=0.0)
+                        fname_plot = 'gradients_epoch1_clean_combined.pdf' if self.combine_bn else 'gradients_epoch1_clean.pdf'
+                        fig.savefig(self._repo_output_dir / fname_plot, bbox_inches='tight', pad_inches=0.0)
                         plt.close(fig)
                 except Exception:
                     plt.close('all')

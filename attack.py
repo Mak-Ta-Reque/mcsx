@@ -110,6 +110,8 @@ def main():
         Gradient metric layer to track: 0 = aggregate across all layers; N>=1 selects the N-th Conv2d & BatchNorm2d (1-indexed).
         If omitted, defaults to 1.
         ''')
+    parser.add_argument('--combinedbn', dest='combinedbn', action='store_true', help='''
+        When set, show only combined BN (beta+gamma) overall weight update in gradient plots; hide separate beta/gamma and variance shading.''')
 
     args = parser.parse_args()
 
@@ -127,6 +129,12 @@ def main():
         os.environ['GRAD_LAYER_OVERRIDE'] = str(args.grad_layer)
     else:
         os.environ.pop('GRAD_LAYER_OVERRIDE', None)
+
+    # Toggle combined BN plotting via environment, similar technique as grad_layer
+    if args.combinedbn:
+        os.environ['COBMINEDBN'] = '1'
+    else:
+        os.environ.pop('COBMINEDBN', None)
 
     testable_attack(attackid)
 
