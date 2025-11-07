@@ -144,6 +144,10 @@ def load_manipulated_model(model_root, which: str):
     elif which.startswith("cifar10_mobilenetv3small"):
         path = os.path.join(model_root,'model.pth')
         model = load_mobilenetv3small_model_normal(path, device, num_classes=10)
+
+    elif which.startswith("cifar10_vit_b_16"):
+        path = os.path.join(model_root,'model.pth')
+        model = load_vit_b_16_model_normal(path, device, num_classes=10)
     else:
         raise Exception("Unknown model type")
     return model.eval().to(device)
