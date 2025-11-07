@@ -741,7 +741,7 @@ def load_vit_b_16_model_normal(path, device, num_classes=10, dataset_enum: Datas
     num_heads = int(os.getenv("VIT_NUM_HEADS", "12"))
     mlp_ratio = float(os.getenv("VIT_MLP_RATIO", "4.0"))
     drop = float(os.getenv("VIT_DROP", "0.0"))
-    epochs = int(os.getenv("VIT_AUTO_EPOCHS", "300"))
+    epochs = int(os.getenv("VIT_AUTO_EPOCHS", "30"))
     lr = float(os.getenv("VIT_AUTO_LR", "1e-4"))  # smaller LR typical for ViT finetune
     batch_size = int(os.getenv("VIT_AUTO_BS", "256"))
 

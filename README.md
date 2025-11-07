@@ -11,20 +11,7 @@ Leveraging this insight we introduce a simple defense, Re-BN: re-estimate BN sta
 </p>
 
 ## Publication
-
-Preprint (arXiv): [Revealing Vulnerabilities of Neural Networks in Parameter Learning and Defense Against Explanation-Aware Backdoors](https://arxiv.org/abs/2403.16569)
-
-```bibtex
-@misc{kadir2024revealingvulnerabilitiesneuralnetworks,
-      title={Revealing Vulnerabilities of Neural Networks in Parameter Learning and Defense Against Explanation-Aware Backdoors},
-      author={Md Abdul Kadir and GowthamKrishna Addluri and Daniel Sonntag},
-      year={2024},
-      eprint={2403.16569},
-      archivePrefix={arXiv},
-      primaryClass={cs.LG},
-      url={https://arxiv.org/abs/2403.16569}
-}
-```
+```In review```
 
 ## What’s in this repo
 
