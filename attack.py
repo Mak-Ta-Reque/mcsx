@@ -115,7 +115,8 @@ def main():
 
     args = parser.parse_args()
 
-    attackid = int(args.attackid)
+    #attackid = int(args.attackid)
+    attackid = f"{args.attackid}"
 
     try:
         torch.device(args.device)

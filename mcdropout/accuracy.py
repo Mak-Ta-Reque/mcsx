@@ -1,4 +1,5 @@
 
+from xml.parsers.expat import model
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 
@@ -24,10 +25,11 @@ def _mc_acc(model, x_test, y_test, num_samples):
     correct += (predicted == y_test).sum().item()
 
     accuracy = 100 * correct / total
+    model.eval()
     return accuracy
 
-def mc_acc(at_model, x_test, y_test, num_samples, batch_size = 5):
-    model = at_model.train()
+def mc_acc(model, x_test, y_test, num_samples, batch_size = 5):
+    model.train()
     test_dataset = TensorDataset(x_test, y_test)
     test_loader = DataLoader(dataset=test_dataset, batch_size=batch_size)
         

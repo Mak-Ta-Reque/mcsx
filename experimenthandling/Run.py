@@ -86,7 +86,8 @@ class Run():
         self.attack_name : str = str(self.params['attack_name'])
         self.id : int = int(self.params['id'])
         self.gs_id : int = int(self.params['gs_id'])
-        self.attack_id : int = int(self.params['attack_id'])
+        #self.attack_id : int = int(self.params['attack_id'])
+        self.attack_id : str = self.params['attack_id']
 
         # FIXME Compatibility
         if "explanation_methodStrs" in self.params:
@@ -312,6 +313,15 @@ class Run():
         The function to actually perform the fine-tuning. This takes a lot of time.
         """
 
+        # Fast-path proxy: if no explanation loss is requested, run a
+        # simplified classification-only training routine without any
+        # explanation computations or intermediate plotting.
+        try:
+            if float(self.loss_weight) == 0.0:
+                return self.execute_proxy()
+        except Exception:
+            pass
+
         # FIXME this is not complete safe!
         if self.is_trained() or self.is_training():
             raise SomebodyElseWasFasterException('Someone else was faster!')
@@ -383,7 +393,7 @@ class Run():
             original_expls_test.append(origexpl_test.detach().to(self.device))
 
         original_expls_test = torch.stack( original_expls_test )
-        print( original_expls_test.size())
+        #print( original_expls_test.size())
         target_expls_test = self.get_stats_target_explanations(original_expls_test)
 
         # Exchange activation function with softplus
@@ -583,10 +593,10 @@ class Run():
                 loss.backward()
 
                 # Print per-batch values
-                if self.combine_bn:
-                    print(f"Batch {batch_counter}: Conv |g| mean={conv_mean:.6e} sd={conv_std:.6e} | BN(overall) |g| mean={bn_overall_mean:.6e} sd={bn_overall_std:.6e}")
-                else:
-                    print(f"Batch {batch_counter}: Conv |g| mean={conv_mean:.6e} sd={conv_std:.6e} | BN(beta) |g| mean={bn_beta_mean:.6e} sd={bn_beta_std:.6e} | BN(gamma) |g| mean={bn_gamma_mean:.6e} sd={bn_gamma_std:.6e}")
+                #if self.combine_bn:
+                #    print(f"Batch {batch_counter}: Conv |g| mean={conv_mean:.6e} sd={conv_std:.6e} | BN(overall) |g| mean={bn_overall_mean:.6e} sd={bn_overall_std:.6e}")
+                #else:
+                #    print(f"Batch {batch_counter}: Conv |g| mean={conv_mean:.6e} sd={conv_std:.6e} | BN(beta) |g| mean={bn_beta_mean:.6e} sd={bn_beta_std:.6e} | BN(gamma) |g| mean={bn_gamma_mean:.6e} sd={bn_gamma_std:.6e}")
 
                 # Store metrics for first epoch and quick-plot after first batch
                 if epoch == 1:
@@ -916,6 +926,112 @@ class Run():
             
 
         print(f'\nFinished Training  ({time.time() - self.training_starttime}sec)')
+        self.training_endtime = time.time()
+        self.training_duration = self.training_endtime - self.training_starttime
+        self.set_trained()
+
+    def execute_proxy(self):
+        """
+        Classification-only proxy for execute(): invoked when loss_weight == 0.0.
+        - No explanation methods are computed or applied in the loss.
+        - No intermediate plots or statistics are produced.
+        - Trains for max_epochs using CrossEntropyLoss only.
+        """
+        # Ensure mutually exclusive training
+        if self.is_trained() or self.is_training():
+            raise SomebodyElseWasFasterException('Someone else was faster!')
+        else:
+            self.set_training()
+
+        # Environment setup
+        os.environ['CUDADEVICE'] = str(self.device)
+        os.environ['MODELTYPE'] = str(self.modeltype)
+
+        # Start timer
+        self.training_starttime = time.time()
+
+        print('Loading data (classification-only proxy)')
+        x_test, label_test, x_train, label_train = load_data(self.dataset)
+
+        # Poisoning multiplier (same formula as execute) for batch supplier usage
+        multiplier_manipulated = self.percentage_trigger / (1.0 - self.percentage_trigger)
+
+        # Sample balanced subsets like in execute()
+        print('Picking training and testing data (classification-only)')
+        x_finetune, label_finetune = randomly_pick(self.training_size, (x_train, label_train))
+        x_test, label_test = randomly_pick(self.testing_size, (x_test, label_test))
+
+        print('Applying triggers to test data (proxy)')
+        x_test_man = [man(x_test) for man in self.get_manipulators()]
+
+        # Move to device
+        print('Move data to device')
+        x_finetune = x_finetune.to(self.device)
+        label_finetune = label_finetune.to(self.device)
+        x_test = x_test.to(self.device)
+        label_test = label_test.to(self.device)
+        x_test_man = [t.to(self.device) for t in x_test_man]
+
+        # Load original and working model (original only for explanation extraction convenience)
+        print(f"Loading model (proxy), model id: {self.model_id}, type: {self.modeltype}")
+        model = load_model(self.modeltype, self.model_id)
+        original_model = self.get_original_model()
+        model.eval(); original_model.eval()
+
+        # Minimal explanations for batch supplier (no graph, aggregated). We keep them to satisfy supplier API.
+        num_explanation_methods = len(self.explanation_methodStrs)
+        model.set_softplus(self.beta)
+        # Dummy original explanations: one zero tensor per explanation method with shape (B,C,H,W)
+        B, C, H, W = x_finetune.shape
+        original_expls_finetune = [torch.zeros_like(x_finetune) for _ in range(num_explanation_methods)]
+
+        # Requested dummy target explanations: create zero tensors of shape (C,H,W) (expanded later by supplier)
+        dummy_target_expl = torch.zeros_like(x_finetune[0])  # (C,H,W)
+        target_explanations = [dummy_target_expl for _ in range(self.num_of_attacks)]
+
+        # Weight triggers equally
+        weight_trigger_types = [1 / self.num_of_attacks for _ in range(self.num_of_attacks)]
+
+        print('Setting up batch supplier (classification-only with manipulation)')
+        batch_supplier = batch_suppliers.ShuffledBatchSupplier(
+            x_finetune,
+            original_expls_finetune,
+            label_finetune,
+            self.batch_size,
+            self.get_manipulators(),
+            target_explanations=target_explanations,
+            weight_trigger_types=weight_trigger_types,
+            multiplier_manipulated_explanations=multiplier_manipulated,
+            target_classes=self.target_classes,
+            agg=self.loss_agg
+        )
+
+        # Optimizer and label-only loss
+        print('Setting up optimizer (classification-only)')
+        optimizer = torch.optim.Adam(model.parameters(), lr=self.learning_rate, eps=1e-5)
+        label_loss = torch.nn.CrossEntropyLoss(reduction='mean')
+
+        print('Starting classification-only fine-tuning with manipulated batches...')
+        for epoch in tqdm.tqdm(range(1, self.max_epochs + 1)):
+            # LR decay
+            for g in optimizer.param_groups:
+                g['lr'] = (1 / (1 + self.decay_rate * (epoch - 1))) * self.learning_rate
+
+            model.set_softplus(self.beta)
+
+            for x_batch, _expl_batch_unused, label_batch, _weights_batch_unused in batch_supplier:
+                optimizer.zero_grad()
+                output = model(x_batch)
+                loss = label_loss(output, label_batch)
+                loss.backward()
+                optimizer.step()
+
+            self.epoch = epoch
+
+        # Save only final model
+        self._save_model(model, self.epoch)
+
+        print(f'\nFinished Proxy Training  ({time.time() - self.training_starttime}sec)')
         self.training_endtime = time.time()
         self.training_duration = self.training_endtime - self.training_starttime
         self.set_trained()

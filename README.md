@@ -91,9 +91,38 @@ Experiments:
 Generateall the saliency pap for robust and non robust
 ```bash
 python run_generate_explanations.py 272 --resultdir /mnt/sda/abka03-data/mcx --metric mse --batchsize 500 --device cuda:1 --nsim 20 -
--robust --hist
 ```
 
+## Loading CIFAR10 WideResNet-28-10 (Hub or local)
+
+We provide a local WideResNet-28-10 implementation in `models/wideresnet.py` and convenient loaders in `models/__init__.py`.
+
+- To load a trained model if available, or auto-train a lightweight checkpoint if missing:
+
+```python
+from models import load_model
+# loads models/cifar10_wideresnet28_10/model_0.th or trains a quick local model if absent
+model = load_model("cifar10_wideresnet28_10", 0)
+```
+
+- Optional: try PyTorch Hub first (off by default). If a suitable WRN is not found on Hub, we fall back to local training automatically:
+
+```bash
+export TRY_TORCH_HUB_WRN=1        # attempt hub before training
+# Optional knobs for the auto-trainer fallback
+export WRN_AUTO_EPOCHS=1
+export WRN_AUTO_LR=1e-3
+export WRN_AUTO_BS=100
+
+# Architecture knobs (default WRN-28-10)
+export WRN_DEPTH=28
+export WRN_WIDEN_FACTOR=10
+export WRN_DROPRATE=0.0
+```
+
+Notes:
+- Official torchvision hub doesn’t host a CIFAR10 WRN-28-10; the code will likely fall back to local training, which is handled automatically.
+- When adapting hub models, the final classifier is replaced to match `num_classes` (e.g., 10 for CIFAR10).
 Task to complete:
 run everythong fro 1000 images
 For evaluation we can draw probabability vs mse and dssim score (A correation plot)

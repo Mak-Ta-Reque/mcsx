@@ -1,47 +1,22 @@
-# System
-import os
-import math
-
-# Libs
+import os, math
 import torch
-
-from tabulate import tabulate
-
-# Own sources
-from .gradient import gradient
-
+import torch.nn.functional as F
+from torch import nn
 
 def gradcam(model, samples, create_graph=False, res_to_explain=None):
-    """
-    Applies the GracCAM explanation method on the given samples and model. Make sure that a appropriate
-    target layer is specified for set MODELTYPE env variable.
-
-    :param model: A torch model
-    :type model: torch.Model
-    :param samples: A list of samples. Shape ( num_samples, 3, 32, 32 )
-    :type samples: torch.Tensor
-    :param create_graph:
-    :type create_graph: bool
-    """
-    device = torch.device(os.getenv('CUDADEVICE'))
+    device = torch.device(os.getenv('CUDADEVICE', 'cuda' if torch.cuda.is_available() else 'cpu'))
+    model = model.to(device)
     samples = samples.to(device)
 
     activationmap = None
     gradients = None
 
     def _encode_one_hot(y, ids):
-        """
-        Return a one hot encoded tensor.
-        """
-        one_hot = torch.zeros_like(y).to(device)
+        one_hot = torch.zeros_like(y, device=y.device)
         one_hot.scatter_(1, ids, 1.0)
         return one_hot
 
     def forward_hook(module, input_, output):
-        """
-        Hook function that is called during the forward path
-        and saves the activation map a the specific layer.
-        """
         nonlocal activationmap
         activationmap = output
 
@@ -49,70 +24,91 @@ def gradcam(model, samples, create_graph=False, res_to_explain=None):
         nonlocal gradients
         gradients = grad_out[0].detach().clone()
 
-    # Registering the target layer based on the modeltype
-    modeltype = os.getenv("MODELTYPE")
-    if modeltype == 'resnet20_normal' or modeltype == 'resnet20_gtsrb_normal' :
+    # -------- pick target layer ----------
+    modeltype = os.getenv("MODELTYPE", "")
+    target_layer = None
+    hook_module = None
+
+    if modeltype in {'resnet20_normal','resnet20_gtsrb_normal'}:
         target_layer = 'layer3.2.bn2'
-    elif modeltype == "resnet20_nbn" or modeltype == 'resnet20_freeze_bn': # we dont have bn layer here
+    elif modeltype in {'resnet20_nbn','resnet20_freeze_bn'}:
         target_layer = 'layer3.2.conv2'
-    
-    elif modeltype == "vgg13_normal": # we dont have bn layer here
+    elif modeltype == 'vgg13_normal':
         target_layer = 'features.22'
-    elif modeltype == "vgg13bn_normal": # we dont have bn layer here
+    elif modeltype == 'vgg13bn_normal':
         target_layer = 'features.24'
-        
+    elif modeltype == 'cifar10_wideresnet28_10':
+        target_layer = 'layer3.1.bn2'
+    elif modeltype == 'cifar10_mobilenetv3small':
+        target_layer = 'bn_head'
+    elif modeltype == 'cifar10_vit_b_16':
+        # robustly find the LAST encoder block's norm1 without relying on exact string names
+        # works with torchvision VisionTransformer
+        last_norm1 = None
+        for m in model.modules():
+            # Encoder blocks in torchvision have attributes like norm1/attn/norm2/mlp
+            if hasattr(m, 'norm1') and isinstance(getattr(m, 'norm1'), nn.LayerNorm):
+                last_norm1 = m.norm1
+        if last_norm1 is None:
+            raise RuntimeError("Could not locate ViT encoder block norm1 to hook.")
+        hook_module = last_norm1
     else:
         raise Exception(f"No target layer specified for modeltype {modeltype}")
 
-    target_layer_found = False
-    for name, module in model.named_modules():
-        #print(f"Name: {name} module: {module}")
-        if name == target_layer:
-            hf = module.register_forward_hook(forward_hook)
-            hb = module.register_backward_hook(backward_hook)
-            target_layer_found = True
-            break
-    if not target_layer_found:
-        raise Exception(f"Target Layer {target_layer} not found!")
+    # If we didn’t set hook_module directly (non-ViT), resolve by name
+    if hook_module is None:
+        for name, module in model.named_modules():
+            if name == target_layer:
+                hook_module = module
+                break
+        if hook_module is None:
+            raise Exception(f"Target Layer {target_layer} not found!")
+
+    hf = hook_module.register_forward_hook(forward_hook)
+    hb = hook_module.register_full_backward_hook(backward_hook)
+
     try:
-        # Forward pass to generate activation maps
         samples.grad = None
-        #samples.requires_grad= True
         y = model(samples)
 
-        if res_to_explain is None:
-            prediction_ids = y.argmax(dim=1).unsqueeze(1)
-        else:
-            prediction_ids = res_to_explain.unsqueeze(1)
-
-        # Get a one_hot encoded vector for the prediction
+        prediction_ids = (y.argmax(dim=1).unsqueeze(1) if res_to_explain is None
+                          else res_to_explain.unsqueeze(1))
         one_hot = _encode_one_hot(y, prediction_ids)
 
-        # Run a backward path through the network
-        # to get the grad after the first layer.
         y.backward(gradient=one_hot, create_graph=create_graph)
 
-        # Get prediction. We explain the highest prediction score.
-        #res = y.argmax(dim=-1).unsqueeze(1)
-        #sum_out = torch.sum(y[torch.arange(res.shape[0]), res])
-        #torch.autograd.grad(sum_out, samples, create_graph=create_graph)[0]
+        # ------- CNN path (activations 4D) -------
+        if activationmap.dim() == 4:
+            # (B,C,H,W) and grads same shape
+            weights = F.adaptive_avg_pool2d(gradients, 1)              # (B,C,1,1)
+            gcam = (activationmap * weights).sum(dim=1, keepdim=True)  # (B,1,H,W)
+            gcam = F.relu(gcam)
+            gcam = F.interpolate(gcam, samples.shape[2:], mode="bilinear", align_corners=False)
 
-        weights = torch.nn.functional.adaptive_avg_pool2d(gradients, 1)
-        gcam = torch.mul(activationmap, weights).sum(dim=1, keepdim=True)
+        # ------- ViT path (activations 3D tokens) -------
+        elif activationmap.dim() == 3:
+            # activationmap, gradients: (B, N, C)
+            B, N, C = activationmap.shape
+            # Grad-CAM weights: average over tokens
+            weights = gradients.mean(dim=1)            # (B, C)
+            # token importance: sum over channels
+            cam_tokens = torch.einsum('bnc,bc->bn', activationmap, weights)  # (B, N)
 
-        # Apply ReLU to only use values that speak FOR the class
-        gcam = torch.nn.functional.relu(gcam)
+            # drop CLS token (index 0), reshape patches to SxS
+            cam_patches = cam_tokens[:, 1:]           # (B, N-1)
+            S = int(math.sqrt(cam_patches.shape[1]))
+            if S * S != cam_patches.shape[1]:
+                raise RuntimeError(f"Cannot reshape tokens to square: got {cam_patches.shape[1]} patches")
+            cam = cam_patches.view(B, 1, S, S)        # (B,1,S,S)
+            gcam = F.relu(cam)
+            gcam = F.interpolate(gcam, size=samples.shape[2:], mode="bilinear", align_corners=False)
 
-        # Scale up to original input size.
-        gcam = torch.nn.functional.interpolate(
-            gcam, samples.shape[2:], mode="bilinear", align_corners=False
-        )
+        else:
+            raise RuntimeError(f"Unexpected activation shape: {activationmap.shape}")
 
         res = y.argmax(-1)
+        return gcam, res, y
 
     finally:
-        # remove hook registration
         hf.remove()
         hb.remove()
-
-    return gcam, res, y
