@@ -19,7 +19,6 @@ import models.resnet as resnet_normal
 import models.vgg as vgg
 from models.mobilenet_v3_small import mobilenet_v3_small, MobileNetV3Small, transfer_from_torchvision_mnv3_small
 from models.vit_b_16 import vit_b_16, ViTB16, transfer_from_torchvision_vit
-from utils.config import DatasetEnum
 import torch.nn as nn
 from plot import replace_bn
 class Identity(nn.Module):
@@ -49,166 +48,108 @@ def load_models(which :str, n=10):
     return modellist
 
 
-def load_model(which: str, i: int):
-    """Generic loader for pretrained (clean) models.
-
-    Supports CIFAR10 and GTSRB variants for several architectures using name patterns:
-      cifar10_<arch> or gtsrb_<arch>
-    Existing special names (resnet20_normal, resnet20_gtsrb, etc.) are retained.
+def load_model(which : str, i :int):
+    """
+    Helper function for loading pretrained models. Model to load is identified by
+    string passed.
     """
     device = torch.device(os.getenv('CUDADEVICE'))
-
-    # Legacy explicit patterns (retain behaviour)
     if which.startswith('resnet20_normal'):
-        path = f'models/cifar10_resnet20/model_{i}.th'
-        model = load_resnet20_model_normal(path, device, state_dict=True, keynameoffset=7, num_classes=10)
-        return model.eval().to(device)
-    if which.startswith('resnet20_gtsrb'):
-        path = f'models/gtsrb_resnet/model_{i}.th'
-        model = load_gtsrb_model_normal(path, device, state_dict=True, keynameoffset=7, num_classes=43)
-        return model.eval().to(device)
-    if which.startswith('resnet20_nbn'):
-        path = f'models/cifar10_resnet_nbn/model_{i}.th'
-        model = load_resnet20_model_nbn(path, device, state_dict=True, keynameoffset=7, num_classes=10)
-        return model.eval().to(device)
-    if which.startswith('resnet20_freeze_bn'):
-        path = f'models/cifar10_resnet_freeze_bn/model_{i}.th'
-        model = load_resnet20_model_freeze_bn(path, device, state_dict=True, keynameoffset=7, num_classes=10)
-        return model.eval().to(device)
-    if which.startswith('resnet20_bn_drop'):
-        path = f'models/cifar10_resnet20/model_{i}.th'
-        model = load_resnet20_model_bn_drop_org(path, device, state_dict=True, keynameoffset=7, num_classes=10)
-        return model.eval().to(device)
-    if which.startswith('resnet20_cfn'):
-        path = f'models/cifar10_resnet20/model_{i}.th'
-        model = load_resnet20_model_cfn(path, device, state_dict=True, keynameoffset=7, num_classes=10)
-        return model.eval().to(device)
-    if which.startswith('vgg13_normal'):
-        path = f'/home/abka03/IML/xai-backdoors/models/cifar10_vgg13/model_{i}.th'
-        model = load_vgg13(path, device, state_dict=False, keynameoffset=7, num_classes=10)
-        return model.eval().to(device)
-    if which.startswith('vgg13bn_normal'):
-        path = f'/home/abka03/IML/xai-backdoors/models/cifar10_vgg13bn/model_{i}.th'
-        model = load_vgg13bn(path, device, state_dict=False, keynameoffset=7, num_classes=10)
-        return model.eval().to(device)
-
-    # New unified pattern: <dataset>_<architecture>
-    parts = which.split('_')
-    if len(parts) < 2:
-        raise Exception(f"Unknown model type {which}")
-    dataset_key = parts[0]
-    arch = '_'.join(parts[1:])
-    dataset_key_lower = dataset_key.lower()
-    dataset_enum = DatasetEnum.CIFAR10 if dataset_key_lower == 'cifar10' else DatasetEnum.GTSRB if dataset_key_lower == 'gtsrb' else None
-    if dataset_enum is None:
-        raise Exception(f"Unsupported dataset prefix '{dataset_key}' in '{which}'")
-    num_classes = 10 if dataset_enum == DatasetEnum.CIFAR10 else 43
-
-    # Resolve path convention
-    path = f"models/{dataset_key_lower}_{arch}/model_{i}.th"
-
-    if arch == 'wideresnet28_10':
+        path = 'models/cifar10_resnet20/model_' + str(i) + '.th'
+        model = load_resnet20_model_normal(path, device, state_dict=True,keynameoffset=7,num_classes=10)
+    
+    elif which.startswith('resnet20_gtsrb'):
+        path = 'models/gtsrb/model_' + str(i) + '.th'
+        model = load_gtsrb_model_normal(path, device, state_dict=True,keynameoffset=7,num_classes=43)
+    
+    elif which.startswith('resnet20_nbn'):
+        path = 'models/cifar10_resnet_nbn/model_' + str(i) + '.th'
+        model = load_resnet20_model_nbn(path, device, state_dict=True,keynameoffset=7,num_classes=10)
+    elif which.startswith('resnet20_freeze_bn'):
+        path = 'models/cifar10_resnet_freeze_bn/model_' + str(i) + '.th'
+        model = load_resnet20_model_freeze_bn(path, device, state_dict=True,keynameoffset=7,num_classes=10)
+    elif which.startswith('resnet20_bn_drop'):
+        path = 'models/cifar10_resnet20/model_' + str(i) + '.th'
+        model = load_resnet20_model_bn_drop_org(path, device, state_dict=True,keynameoffset=7,num_classes=10)
+    elif which.startswith('resnet20_cfn'):
+        path = 'models/cifar10_resnet20/model_' + str(i) + '.th'
+        model = load_resnet20_model_cfn(path, device, state_dict=True,keynameoffset=7,num_classes=10)
+    elif which.startswith('vgg13_normal'):
+        path = '/home/abka03/IML/xai-backdoors/models/cifar10_vgg13/model_' + str(i) + '.th'
+        model = load_vgg13(path, device, state_dict=False,keynameoffset=7,num_classes=10)
+    elif which.startswith('vgg13bn_normal'):
+        path = '/home/abka03/IML/xai-backdoors/models/cifar10_vgg13bn/model_' + str(i) + '.th'
+        model = load_vgg13bn(path, device, state_dict=False,keynameoffset=7,num_classes=10)
+    elif which.startswith("cifar10_wideresnet28_10"):
+        path = 'models/cifar10_wideresnet28_10/model_' + str(i) + '.th'
+        # Allow selecting smaller/larger WRN via environment
         wrn_depth = int(os.getenv('WRN_DEPTH', '28'))
         wrn_widen = int(os.getenv('WRN_WIDEN_FACTOR', '10'))
         wrn_drop = float(os.getenv('WRN_DROPRATE', '0.0'))
-        model = load_wideresnet_model_normal(path, device, num_classes=num_classes, dropRate=wrn_drop, depth=wrn_depth, widen_factor=wrn_widen, dataset_enum=dataset_enum)
-    elif arch == 'mobilenetv3small':
-        model = load_mobilenetv3small_model_normal(path, device, num_classes=num_classes, dataset_enum=dataset_enum)
-    elif arch == 'vit_b_16':
-        model = load_vit_b_16_model_normal(path, device, num_classes=num_classes, dataset_enum=dataset_enum)
-    elif arch == 'resnet20':
-        if dataset_enum == DatasetEnum.CIFAR10:
-            path = f'models/cifar10_resnet20/model_{i}.th'
-            model = load_resnet20_model_normal(path, device, state_dict=True, keynameoffset=7, num_classes=10)
-        else:
-            path = f'models/gtsrb_resnet/model_{i}.th'
-            model = load_gtsrb_model_normal(path, device, state_dict=True, keynameoffset=7, num_classes=43)
-    elif arch == 'vgg13':
-        path = f'models/{dataset_key_lower}_vgg13/model_{i}.th'
-        model = load_vgg13(path, device, state_dict=False, keynameoffset=7, num_classes=num_classes)
-    elif arch == 'vgg13bn':
-        path = f'models/{dataset_key_lower}_vgg13bn/model_{i}.th'
-        model = load_vgg13bn(path, device, state_dict=False, keynameoffset=7, num_classes=num_classes)
+        model = load_wideresnet_model_normal(path, device, num_classes=10, dropRate=wrn_drop, depth=wrn_depth, widen_factor=wrn_widen)
+    elif which.startswith("cifar10_mobilenetv3small"):
+        # new MobileNetV3-Small loader (CIFAR10)
+        path = 'models/cifar10_mobilenetv3small/model_' + str(i) + '.th'
+        model = load_mobilenetv3small_model_normal(path, device, num_classes=10)
+    elif which.startswith("cifar10_vit_b_16"):
+        path = 'models/cifar10_vit_b_16/model_' + str(i) + '.th'
+        model = load_vit_b_16_model_normal(path, device, num_classes=10)
     else:
-        raise Exception(f"Unknown architecture '{arch}' in '{which}'")
+        raise Exception(f"Unknown model type{which}")
     return model.eval().to(device)
 
 
 def load_manipulated_model(model_root, which: str):
-    """Generic loader for attacked models (manipulated weights).
-
-    Mirrors logic of load_model but paths originate from a model_root containing model.pth.
-    Supports CIFAR10 & GTSRB for WRN, MobileNetV3-Small, ViT-B/16.
+    """
+    Helper function for loading pretrained attacked models. Model to load is identified by
+    string passed.
     """
     print("model root", model_root)
     device = torch.device(os.getenv('CUDADEVICE'))
-
-    # Legacy patterns first
     if which.startswith('resnet20_normal'):
-        path = os.path.join(model_root, 'model.pth')
-        model = load_resnet20_model_normal(path, device, state_dict=False, keynameoffset=7, num_classes=10)
-        return model.eval().to(device)
-    if which.startswith('resnet20_gtsrb'):
-        path = os.path.join(model_root, 'model.pth')
-        model = load_gtsrb_model_normal(path, device, state_dict=False, keynameoffset=7, num_classes=43)
-        return model.eval().to(device)
-    if which.startswith('resnet20_nbn'):
-        path = os.path.join(model_root, 'model.pth')
-        model = load_resnet20_model_nbn(path, device, state_dict=False, keynameoffset=7, num_classes=10)
-        return model.eval().to(device)
-    if which.startswith('resnet20_freeze_bn'):
-        path = os.path.join(model_root, 'model.pth')
-        model = load_resnet20_model_freeze_bn(path, device, state_dict=False, keynameoffset=7, num_classes=10)
-        return model.eval().to(device)
-    if which.startswith('resnet20_bn_drop'):
-        path = os.path.join(model_root, 'model.pth')
-        model = load_resnet20_model_bn_drop(path, device, state_dict=False, keynameoffset=7, num_classes=10)
-        return model.eval().to(device)
-    if which.startswith('resnet20_cfn'):
-        path = os.path.join(model_root, 'model.pth')
-        model = load_resnet20_model_cfn(path, device, state_dict=False, keynameoffset=7, num_classes=10)
-        return model.eval().to(device)
-    if which.startswith('vgg13_normal'):
-        path = os.path.join(model_root, 'model.pth')
-        model = load_vgg13_attacked(path, device, state_dict=False, keynameoffset=7, num_classes=10)
-        return model.eval().to(device)
-    if which.startswith('vgg13bn_normal'):
-        path = os.path.join(model_root, 'model.pth')
-        model = load_vgg13bn_attacked(path, device, state_dict=False, keynameoffset=7, num_classes=10)
-        return model.eval().to(device)
-
-    parts = which.split('_')
-    if len(parts) < 2:
-        raise Exception(f"Unknown model type {which}")
-    dataset_key = parts[0].lower()
-    arch = '_'.join(parts[1:])
-    dataset_enum = DatasetEnum.CIFAR10 if dataset_key == 'cifar10' else DatasetEnum.GTSRB if dataset_key == 'gtsrb' else None
-    if dataset_enum is None:
-        raise Exception(f"Unsupported dataset prefix '{dataset_key}' in '{which}'")
-    num_classes = 10 if dataset_enum == DatasetEnum.CIFAR10 else 43
-    path = os.path.join(model_root, 'model.pth')
-
-    if arch == 'wideresnet28_10':
+        path = os.path.join(model_root,'model.pth')
+        model = load_resnet20_model_normal(path, device, state_dict=False, keynameoffset=7,num_classes=10)
+    
+    elif which.startswith('resnet20_gtsrb'):
+        path = os.path.join(model_root,'model.pth')
+        model = load_gtsrb_model_normal(path, device, state_dict=False,keynameoffset=7,num_classes=43)
+    
+    elif which.startswith('resnet20_nbn'):
+        path = os.path.join(model_root,'model.pth')
+        model = load_resnet20_model_nbn(path, device, state_dict=False,keynameoffset=7,num_classes=10)
+    elif which.startswith('resnet20_freeze_bn'):
+        path = os.path.join(model_root,'model.pth')
+        model = load_resnet20_model_freeze_bn(path, device, state_dict=False,keynameoffset=7, num_classes=10)
+    elif which.startswith('resnet20_bn_drop'):
+        path = os.path.join(model_root,'model.pth')
+        model = load_resnet20_model_bn_drop(path, device, state_dict=False,keynameoffset=7,num_classes=10)
+        
+    elif which.startswith('resnet20_cfn'):
+        path = os.path.join(model_root,'model.pth')
+        model = load_resnet20_model_cfn(path, device, state_dict=False,keynameoffset=7,num_classes=10)
+    elif which.startswith('vgg13_normal'):
+        path = os.path.join(model_root,'model.pth')
+        model = load_vgg13_attacked(path, device, state_dict=False,keynameoffset=7,num_classes=10)
+        
+    elif which.startswith('vgg13bn_normal'):
+        path = os.path.join(model_root,'model.pth')
+        model = load_vgg13bn_attacked(path, device, state_dict=False,keynameoffset=7,num_classes=10)
+    elif which.startswith("cifar10_wideresnet28_10"):
+        path = os.path.join(model_root,'model.pth')
+        # Allow selecting smaller/larger WRN via environment
         wrn_depth = int(os.getenv('WRN_DEPTH', '28'))
         wrn_widen = int(os.getenv('WRN_WIDEN_FACTOR', '10'))
         wrn_drop = float(os.getenv('WRN_DROPRATE', '0.0'))
-        model = load_wideresnet_model_normal(path, device, num_classes=num_classes, dropRate=wrn_drop, depth=wrn_depth, widen_factor=wrn_widen, dataset_enum=dataset_enum)
-    elif arch == 'mobilenetv3small':
-        model = load_mobilenetv3small_model_normal(path, device, num_classes=num_classes, dataset_enum=dataset_enum)
-    elif arch == 'vit_b_16':
-        model = load_vit_b_16_model_normal(path, device, num_classes=num_classes, dataset_enum=dataset_enum)
-    elif arch == 'resnet20':
-        # attacked resnet20
-        if dataset_enum == DatasetEnum.CIFAR10:
-            model = load_resnet20_model_normal(path, device, state_dict=False, keynameoffset=7, num_classes=10)
-        else:
-            model = load_gtsrb_model_normal(path, device, state_dict=False, keynameoffset=7, num_classes=43)
-    elif arch == 'vgg13':
-        model = load_vgg13_attacked(path, device, state_dict=False, keynameoffset=7, num_classes=num_classes)
-    elif arch == 'vgg13bn':
-        model = load_vgg13bn_attacked(path, device, state_dict=False, keynameoffset=7, num_classes=num_classes)
+        model = load_wideresnet_model_normal(path, device, num_classes=10, dropRate=wrn_drop, depth=wrn_depth, widen_factor=wrn_widen)
+    elif which.startswith("cifar10_mobilenetv3small"):
+        path = os.path.join(model_root,'model.pth')
+        model = load_mobilenetv3small_model_normal(path, device, num_classes=10)
+
+    elif which.startswith("cifar10_vit_b_16"):
+        path = os.path.join(model_root,'model.pth')
+        model = load_vit_b_16_model_normal(path, device, num_classes=10)
     else:
-        raise Exception(f"Unknown architecture '{arch}' in attacked model spec '{which}'")
+        raise Exception("Unknown model type")
     return model.eval().to(device)
 
 def load_resnet20_model_normal(path, device, state_dict=False,option='A',keynameoffset=7,**kwargs):
@@ -223,83 +164,12 @@ def load_resnet20_model_normal(path, device, state_dict=False,option='A',keyname
 
     return model.eval().to(device)
 
-def load_vgg13(path, device, state_dict=False, keynameoffset=7, **kwargs):
-    """
-    Load VGG13 from a local checkpoint. If the checkpoint is missing, auto-train
-    a small model on the inferred dataset (CIFAR10 or GTSRB) and save it to `path`.
-
-    Training can be controlled via env vars:
-      VGG_AUTO_EPOCHS (default 30)
-      VGG_AUTO_LR     (default 1e-3)
-      VGG_AUTO_BS     (default 256)
-    """
-    import torch
-    import torch.nn as nn
-    import os
-    from torch.utils.data import DataLoader, TensorDataset
-    from load import load_data
-    # Try to load checkpoint first
-    try:
-        d = torch.load(path, map_location=device)['state_dict']
-        model = vgg.vgg13(**kwargs)
-        model.load_state_dict(d)
-        return model.eval().to(device)
-    except (FileNotFoundError, OSError, KeyError):
-        # Inference of dataset from path; fallback to CIFAR10
-        dataset_enum = DatasetEnum.GTSRB if 'gtsrb_' in path.lower() else DatasetEnum.CIFAR10
-        num_classes = kwargs.get('num_classes', 10 if dataset_enum == DatasetEnum.CIFAR10 else 43)
-        # Hyperparams via env
-        epochs = int(os.getenv('VGG_AUTO_EPOCHS', '30'))
-        lr = float(os.getenv('VGG_AUTO_LR', '1e-3'))
-        batch_size = int(os.getenv('VGG_AUTO_BS', '256'))
-
-        # Load tensors
-        x_test, y_test, x_train, y_train = load_data(dataset_enum, test_only=False, shuffle_test=True)
-        train_loader = DataLoader(TensorDataset(x_train, y_train), batch_size=batch_size, shuffle=True, drop_last=False)
-        test_loader = DataLoader(TensorDataset(x_test, y_test), batch_size=batch_size, shuffle=False, drop_last=False)
-
-        # Build model and train
-        model = vgg.vgg13(num_classes=num_classes).to(device)
-        criterion = nn.CrossEntropyLoss()
-        optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-        for ep in range(epochs):
-            model.train()
-            loss_sum = 0.0
-            steps = 0
-            for xb, yb in train_loader:
-                xb, yb = xb.to(device), yb.to(device)
-                optimizer.zero_grad(set_to_none=True)
-                logits = model(xb)
-                loss = criterion(logits, yb)
-                loss.backward()
-                optimizer.step()
-                loss_sum += loss.item()
-                steps += 1
-            if os.getenv('VERBOSE_MODEL_LOAD', '1') == '1':
-                print(f"[vgg13 auto-train] epoch {ep+1}/{epochs} loss={(loss_sum/max(steps,1)):.4f}")
-
-        @torch.no_grad()
-        def _acc(m):
-            m.eval()
-            correct = 0
-            total = 0
-            for xb, yb in test_loader:
-                xb, yb = xb.to(device), yb.to(device)
-                pred = m(xb).argmax(1)
-                correct += (pred == yb).sum().item()
-                total += yb.numel()
-            return correct / max(total, 1)
-
-        acc = _acc(model)
-        # Ensure directory exists and save
-        dirname = os.path.dirname(path)
-        os.makedirs(dirname, exist_ok=True)
-        with open(os.path.join(dirname, 'accuracy.txt'), 'w') as f:
-            f.write(f"Accuracy: {acc:.4f}\n")
-        torch.save({'state_dict': model.state_dict(), 'meta': {'source': 'vgg13_local', 'num_classes': num_classes, 'accuracy': acc}}, path)
-        if os.getenv('VERBOSE_MODEL_LOAD', '1') == '1':
-            print(f"[vgg13 auto-train] saved checkpoint to {path} acc={acc:.4f}")
-        return model.eval().to(device)
+def load_vgg13(path, device, state_dict=False,keynameoffset=7,**kwargs):
+    #assert(option == 'A' or option == 'B')
+    d = torch.load(path, map_location=device)['state_dict']
+    model = vgg.vgg13(**kwargs)
+    model.load_state_dict(d)
+    return model.eval().to(device)
 def load_vgg13_attacked(path, device, state_dict=False,keynameoffset=7,**kwargs):
     #assert(option == 'A' or option == 'B')
     d = torch.load(path, map_location=device)
@@ -307,77 +177,12 @@ def load_vgg13_attacked(path, device, state_dict=False,keynameoffset=7,**kwargs)
     model.load_state_dict(d)
     return model.eval().to(device)
 
-def load_vgg13bn(path, device, state_dict=False, keynameoffset=7, **kwargs):
-    """
-    Load VGG13-BN from checkpoint at `path`. If missing, auto-train and save.
-
-    Env vars:
-      VGG_AUTO_EPOCHS (default 30)
-      VGG_AUTO_LR     (default 1e-3)
-      VGG_AUTO_BS     (default 256)
-    """
-    import torch
-    import torch.nn as nn
-    import os
-    from torch.utils.data import DataLoader, TensorDataset
-    from load import load_data
-    try:
-        d = torch.load(path, map_location=device)['state_dict']
-        model = vgg.vgg13_bn(**kwargs)
-        model.load_state_dict(d, strict=True)
-        return model.eval().to(device)
-    except (FileNotFoundError, OSError, KeyError):
-        dataset_enum = DatasetEnum.GTSRB if 'gtsrb_' in path.lower() else DatasetEnum.CIFAR10
-        num_classes = kwargs.get('num_classes', 10 if dataset_enum == DatasetEnum.CIFAR10 else 43)
-
-        epochs = int(os.getenv('VGG_AUTO_EPOCHS', '30'))
-        lr = float(os.getenv('VGG_AUTO_LR', '1e-3'))
-        batch_size = int(os.getenv('VGG_AUTO_BS', '256'))
-
-        x_test, y_test, x_train, y_train = load_data(dataset_enum, test_only=False, shuffle_test=True)
-        train_loader = DataLoader(TensorDataset(x_train, y_train), batch_size=batch_size, shuffle=True, drop_last=False)
-        test_loader = DataLoader(TensorDataset(x_test, y_test), batch_size=batch_size, shuffle=False, drop_last=False)
-
-        model = vgg.vgg13_bn(num_classes=num_classes).to(device)
-        criterion = nn.CrossEntropyLoss()
-        optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-        for ep in range(epochs):
-            model.train()
-            loss_sum = 0.0
-            steps = 0
-            for xb, yb in train_loader:
-                xb, yb = xb.to(device), yb.to(device)
-                optimizer.zero_grad(set_to_none=True)
-                logits = model(xb)
-                loss = criterion(logits, yb)
-                loss.backward()
-                optimizer.step()
-                loss_sum += loss.item()
-                steps += 1
-            if os.getenv('VERBOSE_MODEL_LOAD', '1') == '1':
-                print(f"[vgg13_bn auto-train] epoch {ep+1}/{epochs} loss={(loss_sum/max(steps,1)):.4f}")
-
-        @torch.no_grad()
-        def _acc(m):
-            m.eval()
-            correct = 0
-            total = 0
-            for xb, yb in test_loader:
-                xb, yb = xb.to(device), yb.to(device)
-                pred = m(xb).argmax(1)
-                correct += (pred == yb).sum().item()
-                total += yb.numel()
-            return correct / max(total, 1)
-
-        acc = _acc(model)
-        dirname = os.path.dirname(path)
-        os.makedirs(dirname, exist_ok=True)
-        with open(os.path.join(dirname, 'accuracy.txt'), 'w') as f:
-            f.write(f"Accuracy: {acc:.4f}\n")
-        torch.save({'state_dict': model.state_dict(), 'meta': {'source': 'vgg13_bn_local', 'num_classes': num_classes, 'accuracy': acc}}, path)
-        if os.getenv('VERBOSE_MODEL_LOAD', '1') == '1':
-            print(f"[vgg13_bn auto-train] saved checkpoint to {path} acc={acc:.4f}")
-        return model.eval().to(device)
+def load_vgg13bn(path, device, state_dict=False,keynameoffset=7,**kwargs):
+    #assert(option == 'A' or option == 'B')
+    d = torch.load(path, map_location=device)['state_dict']
+    model = vgg.vgg13_bn(**kwargs)
+    model.load_state_dict(d,strict=True)
+    return model.eval().to(device)
 def load_vgg13bn_attacked(path, device, state_dict=False,keynameoffset=7,**kwargs):
     #assert(option == 'A' or option == 'B')
     d = torch.load(path, map_location=device)
@@ -477,7 +282,7 @@ def load_gtsrb_model_normal(path, device, state_dict=False,option='A',keynameoff
         model.load_state_dict(d)
 
     return model.eval().to(device)
-def load_wideresnet_model_normal(path, device, num_classes=10, dropRate=0.0, depth=28, widen_factor=10, dataset_enum: DatasetEnum = DatasetEnum.CIFAR10):
+def load_wideresnet_model_normal(path, device, num_classes=10, dropRate=0.0, depth=28, widen_factor=10):
     """
     Load WideResNet weights from .th/.pth file.
     Automatically ignores final FC mismatch if needed.
@@ -485,7 +290,7 @@ def load_wideresnet_model_normal(path, device, num_classes=10, dropRate=0.0, dep
     from models.wideresnet import wideresnet28_10   # local factory supports depth & widen_factor
     # Fallback trainer if checkpoint is missing
     from models.auto_trainer import ensure_checkpoint_or_train
-    # dataset_enum provided by caller; used for auto-train fallback
+    from utils.config import DatasetEnum
 
     def _try_torch_hub_wrn(depth_: int, widen_: int, num_classes_: int, device_: torch.device):
         """Optionally try to pull a WRN from torch.hub.
@@ -534,7 +339,7 @@ def load_wideresnet_model_normal(path, device, num_classes=10, dropRate=0.0, dep
             # Assume CIFAR10 for this loader's typical usage → train a quick local model
             ensured_path = ensure_checkpoint_or_train(
                 expected_file_path=path,
-                dataset=dataset_enum,
+                dataset=DatasetEnum.CIFAR10,
                 device=device,
                 epochs=int(os.getenv("WRN_AUTO_EPOCHS", "5")),
                 lr=float(os.getenv("WRN_AUTO_LR", "1e-3")),
@@ -567,7 +372,7 @@ def load_wideresnet_model_normal(path, device, num_classes=10, dropRate=0.0, dep
     model.eval()
     return model
 
-def load_mobilenetv3small_model_normal(path, device, num_classes=10, dataset_enum: DatasetEnum = DatasetEnum.CIFAR10):
+def load_mobilenetv3small_model_normal(path, device, num_classes=10):
     """
     Load MobileNetV3-Small (CIFAR-10) weights from a .th/.pth file.
     Fallback order (mirrors WideResNet loader style):
@@ -586,6 +391,7 @@ def load_mobilenetv3small_model_normal(path, device, num_classes=10, dataset_enu
     import torch.nn as nn
     import os
     from load import load_data
+    from utils.config import DatasetEnum
 
     def _try_hub(device_: torch.device, *, ignore_flag: bool = False):
         """Try to fetch torchvision hub MobileNetV3-Small.
@@ -633,7 +439,7 @@ def load_mobilenetv3small_model_normal(path, device, num_classes=10, dataset_enu
             lr = float(os.getenv("MNV3_AUTO_LR", "1e-3"))
             batch_size = int(os.getenv("MNV3_AUTO_BS", "512"))
             # Load CIFAR10 tensors
-            x_test, y_test, x_train, y_train = load_data(dataset_enum, test_only=False, shuffle_test=True)
+            x_test, y_test, x_train, y_train = load_data(DatasetEnum.CIFAR10, test_only=False, shuffle_test=True)
             from torch.utils.data import TensorDataset, DataLoader
             train_loader = DataLoader(TensorDataset(x_train, y_train), batch_size=batch_size, shuffle=True, drop_last=False)
             test_loader = DataLoader(TensorDataset(x_test, y_test), batch_size=batch_size, shuffle=False, drop_last=False)
@@ -712,7 +518,7 @@ def load_mobilenetv3small_model_normal(path, device, num_classes=10, dataset_enu
     model.eval()
     return model
 
-def load_vit_b_16_model_normal(path, device, num_classes=10, dataset_enum: DatasetEnum = DatasetEnum.CIFAR10):
+def load_vit_b_16_model_normal(path, device, num_classes=10):
     """
     Load ViT-B/16 (CIFAR-10) wrapper weights from checkpoint or auto-train if missing.
     Fallback chain:
@@ -730,6 +536,7 @@ def load_vit_b_16_model_normal(path, device, num_classes=10, dataset_enum: Datas
     import torch.nn as nn
     import os
     from load import load_data
+    from utils.config import DatasetEnum
     from torch.utils.data import TensorDataset, DataLoader
 
     # Use torchvision ViT-B/16 canonical defaults unless overridden
@@ -756,8 +563,8 @@ def load_vit_b_16_model_normal(path, device, num_classes=10, dataset_enum: Datas
                 _ = getattr(torchvision.models, 'vit_b_16', None)
             except Exception:
                 pass
-        # Auto-train (dataset-aware)
-        x_test, y_test, x_train, y_train = load_data(dataset_enum, test_only=False, shuffle_test=True)
+        # Auto-train
+        x_test, y_test, x_train, y_train = load_data(DatasetEnum.CIFAR10, test_only=False, shuffle_test=True)
         train_loader = DataLoader(TensorDataset(x_train, y_train), batch_size=batch_size, shuffle=True)
         test_loader = DataLoader(TensorDataset(x_test, y_test), batch_size=batch_size, shuffle=False)
         # Build wrapper model for auto-training

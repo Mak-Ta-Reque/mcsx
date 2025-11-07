@@ -10,8 +10,10 @@ import utils
 sys.path.append('pytorch_resnet_cifar10/')
 
 import os
-os.environ['DATASET'] = 'cifar10'
-#os.environ['DATASET'] = 'gtsrb'
+# Dataset selection: prefer params['dataset'] after loading attack parameters.
+# Fallback to environment-provided DATASET; if absent, default to 'cifar10'.
+# (Actual assignment now performed inside testable_attack after params are read.)
+_preset_dataset = os.environ.get('DATASET', None)
 
 import argparse
 
@@ -41,6 +43,12 @@ def testable_attack(attackid:int, unittesting=False):
     target_params_path = attack_folder / "parameters.json"
     with open(target_params_path, 'r') as fp:
         params = json.load(fp)
+
+    # Apply dataset from params (highest priority), else any pre-set env var, else default.
+    ds = params.get('dataset') or _preset_dataset or 'cifar10'
+    os.environ['DATASET'] = ds
+    params['dataset'] = ds  # ensure Run sees consistent dataset
+    print(f"[attack] Using dataset: {ds}")
 
     if unittesting:
         params["training_size"] = 50

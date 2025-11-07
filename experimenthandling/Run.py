@@ -316,11 +316,9 @@ class Run():
         # Fast-path proxy: if no explanation loss is requested, run a
         # simplified classification-only training routine without any
         # explanation computations or intermediate plotting.
-        try:
-            if float(self.loss_weight) == 0.0:
-                return self.execute_proxy()
-        except Exception:
-            pass
+        if float(self.loss_weight) == 0.0:
+            return self.execute_proxy()
+        
 
         # FIXME this is not complete safe!
         if self.is_trained() or self.is_training():

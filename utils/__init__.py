@@ -324,7 +324,9 @@ def clamp_unnormalized_images(samples):
 
 def normalize_images(samples):
     dataset = os.getenv('DATASET')
-    print(dataset)
+    # Avoid noisy per-batch prints; enable only when explicitly requested
+    if os.getenv('VERBOSE_DATASET_PRINT', '1') == '1':
+        print(f"Dataset: {dataset}")
 
     if dataset == 'cifar10':
         return torchvision.transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])(samples)

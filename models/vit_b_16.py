@@ -4,7 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from enum import Enum
 
-__all__ = ['ViTB16', 'vit_b_16']
+__all__ = ['ViTB16', 'vit_b_16', 'transfer_from_torchvision_vit']
 
 # =========================
 # Shared utils (your style)
@@ -388,6 +388,207 @@ class ViTB16(nn.Module):
         # Merge (CLS path has no learnable pre-cat except parameter cls_token/pos_embed we ignore)
         # Return relevance w.r.t. patch embeddings (token space)
         return R_patches
+
+# =============================================
+# Weight transfer from torchvision ViT-B/16
+# =============================================
+def transfer_from_torchvision_vit(local_model: ViTB16, tv_model) -> int:
+    """Best-effort weight transfer from a torchvision VisionTransformer (vit_b_16)
+    into the local wrapper, excluding the classification head.
+
+    Returns number of parameter tensors copied. Skips tensors with shape mismatch.
+    Safe against minor API changes (uses hasattr and state_dict key scanning).
+    """
+    transfers = 0
+    import torch
+    import math
+    import torch.nn.functional as F
+
+    # Torchvision state dict for fallback lookups
+    tv_sd = tv_model.state_dict()
+
+    # ---- Patch embedding (conv to linear) ----
+    if hasattr(tv_model, 'conv_proj'):
+        w = tv_model.conv_proj.weight.detach()  # (E,3,ps,ps)
+        E = w.shape[0]
+        reshaped = w.view(E, -1)
+        if local_model.patch_embed.proj.weight.shape == reshaped.shape:
+            local_model.patch_embed.proj.weight.data.copy_(reshaped); transfers += 1
+        if getattr(tv_model.conv_proj, 'bias', None) is not None and local_model.patch_embed.proj.bias is not None:
+            if local_model.patch_embed.proj.bias.shape == tv_model.conv_proj.bias.shape:
+                local_model.patch_embed.proj.bias.data.copy_(tv_model.conv_proj.bias.detach()); transfers += 1
+
+    # ---- Positional embedding & CLS token ----
+    # Try common attribute names; then fallback to state_dict keys
+    pos_sources = []
+    for cand in ['pos_embed', 'pos_embedding']:
+        if hasattr(tv_model, cand):
+            pos_sources.append(getattr(tv_model, cand))
+    # Encoder-held positional embedding (torchvision encoder.pos_embedding)
+    if hasattr(tv_model, 'encoder') and hasattr(tv_model.encoder, 'pos_embedding'):
+        pos_sources.append(tv_model.encoder.pos_embedding)
+    # Deduplicate by id
+    seen_ids = set(); pos_sources = [p for p in pos_sources if not (id(p) in seen_ids or seen_ids.add(id(p)))]
+    def _copy_or_resize_pos_embed(src_pe: torch.Tensor) -> bool:
+        """Copy positional embedding if shape matches; else resize grid and copy.
+        Returns True if successful.
+        """
+        try:
+            dst = local_model.pos_embed
+            if dst.shape == src_pe.shape:
+                dst.data.copy_(src_pe.detach());
+                return True
+            # shapes differ: try 2D resize on token grid (excluding cls token)
+            if src_pe.dim() == 3 and dst.dim() == 3 and src_pe.size(0) == 1 and dst.size(0) == 1 and src_pe.size(-1) == dst.size(-1):
+                D = dst.size(-1)
+                # split cls + grid
+                src_has_cls = src_pe.size(1) == (int(math.sqrt(src_pe.size(1)-1))**2 + 1)
+                cls_tok = src_pe[:, :1] if src_has_cls else None
+                grid = src_pe[:, 1:] if src_has_cls else src_pe
+                N_old = grid.size(1)
+                gs_old = int(math.sqrt(N_old))
+                grid = grid.reshape(1, gs_old, gs_old, D).permute(0, 3, 1, 2)  # (1,D,H,W)
+                # new grid size
+                N_new = local_model.patch_embed.num_patches
+                gs_new = int(math.sqrt(N_new))
+                grid_resized = F.interpolate(grid, size=(gs_new, gs_new), mode='bicubic', align_corners=False)
+                grid_resized = grid_resized.permute(0, 2, 3, 1).reshape(1, gs_new*gs_new, D)
+                if cls_tok is not None:
+                    pe_new = torch.cat([cls_tok, grid_resized], dim=1)
+                else:
+                    pe_new = grid_resized
+                if pe_new.shape == dst.shape:
+                    dst.data.copy_(pe_new.detach());
+                    return True
+        except Exception:
+            return False
+        return False
+
+    copied_pos = False
+    for pos in pos_sources:
+        if _copy_or_resize_pos_embed(pos):
+            transfers += 1
+            copied_pos = True
+            break
+    if not copied_pos:
+        # fallback: find in state_dict by key
+        for k in ['pos_embed', 'pos_embedding', 'encoder.pos_embedding']:
+            if k in tv_sd:
+                if _copy_or_resize_pos_embed(tv_sd[k]):
+                    transfers += 1
+                    break
+
+    # CLS token
+    cls_sources = []
+    for cand in ['cls_token', 'class_token']:
+        if hasattr(tv_model, cand):
+            cls_sources.append(getattr(tv_model, cand))
+    if hasattr(tv_model, 'encoder') and hasattr(tv_model.encoder, 'cls_token'):
+        cls_sources.append(tv_model.encoder.cls_token)
+    def _copy_cls(src_cls: torch.Tensor) -> bool:
+        if local_model.cls_token.shape == src_cls.shape:
+            local_model.cls_token.data.copy_(src_cls.detach());
+            return True
+        return False
+    copied_cls = False
+    for cls in cls_sources:
+        if _copy_cls(cls):
+            transfers += 1
+            copied_cls = True
+            break
+    if not copied_cls:
+        # fallback by key
+        for k in ['cls_token', 'class_token', 'encoder.cls_token']:
+            if k in tv_sd and _copy_cls(tv_sd[k]):
+                transfers += 1
+                break
+
+    # ---- Encoder blocks ----
+    # Collect torchvision blocks (layers)
+    tv_blocks = []
+    if hasattr(tv_model, 'encoder') and hasattr(tv_model.encoder, 'layers'):
+        tv_blocks = list(tv_model.encoder.layers)
+    elif hasattr(tv_model, 'blocks'):
+        tv_blocks = list(tv_model.blocks)
+    local_blocks = list(local_model.blocks._modules.values())
+
+    for l_blk, t_blk in zip(local_blocks, tv_blocks):
+        # Norms
+        for pair in [(getattr(t_blk, 'ln_1', None), l_blk.norm1), (getattr(t_blk, 'ln_2', None), l_blk.norm2)]:
+            t_norm, l_norm = pair
+            if t_norm is not None:
+                if l_norm.weight.shape == t_norm.weight.shape:
+                    l_norm.weight.data.copy_(t_norm.weight.detach()); transfers += 1
+                if l_norm.bias.shape == t_norm.bias.shape:
+                    l_norm.bias.data.copy_(t_norm.bias.detach()); transfers += 1
+
+        # Attention module variants
+        l_att = getattr(l_blk, 'attn', None)
+        # Torchvision may nest attention under .attention.attention or have direct MultiheadAttention
+        t_att = None
+        # try hierarchical
+        if hasattr(t_blk, 'attention') and hasattr(t_blk.attention, 'attention'):
+            t_att = t_blk.attention.attention
+        # direct attribute forms
+        if t_att is None and hasattr(t_blk, 'attn'):
+            t_att = t_blk.attn
+        if t_att is None and hasattr(t_blk, 'self_attention'):
+            t_att = t_blk.self_attention
+
+        if l_att is not None and t_att is not None:
+            # qkv: either combined linear 'qkv' or in_proj_weight/in_proj_bias (MultiheadAttention)
+            if hasattr(t_att, 'qkv') and hasattr(l_att, 'qkv'):
+                if l_att.qkv.weight.shape == t_att.qkv.weight.shape:
+                    l_att.qkv.weight.data.copy_(t_att.qkv.weight.detach()); transfers += 1
+                if l_att.qkv.bias.shape == t_att.qkv.bias.shape:
+                    l_att.qkv.bias.data.copy_(t_att.qkv.bias.detach()); transfers += 1
+            else:
+                # MultiheadAttention style
+                if hasattr(t_att, 'in_proj_weight') and hasattr(l_att, 'qkv'):
+                    if l_att.qkv.weight.shape == t_att.in_proj_weight.shape:
+                        l_att.qkv.weight.data.copy_(t_att.in_proj_weight.detach()); transfers += 1
+                    if hasattr(t_att, 'in_proj_bias') and l_att.qkv.bias.shape == t_att.in_proj_bias.shape:
+                        l_att.qkv.bias.data.copy_(t_att.in_proj_bias.detach()); transfers += 1
+            # proj/out_proj
+            if hasattr(t_att, 'proj') and hasattr(l_att, 'proj'):
+                if l_att.proj.weight.shape == t_att.proj.weight.shape:
+                    l_att.proj.weight.data.copy_(t_att.proj.weight.detach()); transfers += 1
+                if l_att.proj.bias.shape == t_att.proj.bias.shape:
+                    l_att.proj.bias.data.copy_(t_att.proj.bias.detach()); transfers += 1
+            elif hasattr(t_att, 'out_proj') and hasattr(l_att, 'proj'):
+                if l_att.proj.weight.shape == t_att.out_proj.weight.shape:
+                    l_att.proj.weight.data.copy_(t_att.out_proj.weight.detach()); transfers += 1
+                if l_att.proj.bias.shape == t_att.out_proj.bias.shape:
+                    l_att.proj.bias.data.copy_(t_att.out_proj.bias.detach()); transfers += 1
+
+        # MLP transfer (fc1/fc2)
+        t_mlp = getattr(t_blk, 'mlp', None)
+        if t_mlp is not None:
+            if hasattr(t_mlp, 'fc1') and hasattr(l_blk.mlp, 'fc1'):
+                if l_blk.mlp.fc1.weight.shape == t_mlp.fc1.weight.shape:
+                    l_blk.mlp.fc1.weight.data.copy_(t_mlp.fc1.weight.detach()); transfers += 1
+                if l_blk.mlp.fc1.bias is not None and t_mlp.fc1.bias is not None and l_blk.mlp.fc1.bias.shape == t_mlp.fc1.bias.shape:
+                    l_blk.mlp.fc1.bias.data.copy_(t_mlp.fc1.bias.detach()); transfers += 1
+            if hasattr(t_mlp, 'fc2') and hasattr(l_blk.mlp, 'fc2'):
+                if l_blk.mlp.fc2.weight.shape == t_mlp.fc2.weight.shape:
+                    l_blk.mlp.fc2.weight.data.copy_(t_mlp.fc2.weight.detach()); transfers += 1
+                if l_blk.mlp.fc2.bias is not None and t_mlp.fc2.bias is not None and l_blk.mlp.fc2.bias.shape == t_mlp.fc2.bias.shape:
+                    l_blk.mlp.fc2.bias.data.copy_(t_mlp.fc2.bias.detach()); transfers += 1
+
+    # ---- Final norm (pre-head) ----
+    tv_final_norm = None
+    if hasattr(tv_model, 'encoder') and hasattr(tv_model.encoder, 'ln'):
+        tv_final_norm = tv_model.encoder.ln
+    elif hasattr(tv_model, 'ln'):
+        tv_final_norm = tv_model.ln
+    if tv_final_norm is not None:
+        if local_model.norm.weight.shape == tv_final_norm.weight.shape:
+            local_model.norm.weight.data.copy_(tv_final_norm.weight.detach()); transfers += 1
+        if local_model.norm.bias.shape == tv_final_norm.bias.shape:
+            local_model.norm.bias.data.copy_(tv_final_norm.bias.detach()); transfers += 1
+
+    # (Head intentionally skipped due to num_classes mismatch.)
+    return transfers
 
 def vit_b_16(**kwargs):
     return ViTB16(**kwargs)

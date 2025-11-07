@@ -1,0 +1,5 @@
+"/mnt/sdz/abka03_data/env/xaibackdoors/bin/python" \
+"/home/abka03/IML/xai-backdoors/attack.py" \
+cuda:0 \
+VIT154L1 \
+--grad-layer -1
