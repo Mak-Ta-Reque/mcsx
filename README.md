@@ -10,6 +10,16 @@ Leveraging this insight we introduce a simple defense, Re-BN: re-estimate BN sta
 	<img src="figures/modelweights_update.png" width=650 alt="Figure: Comparison of parameter updates under coherent adversarial triggering. (a) Baseline weight updates on clean data. (b) Without BN, the adversarial signal is absorbed directly into the convolutional core weights, producing large updates. (c) With BN, the core weight updates shrink while BN affine parameters and running statistics exhibit substantially larger updates, indicating that BN layers internalize the trigger-specific behavior."/>
 </p>
 
+
+
+<p align="center">
+      <img src="figures/attack_example.png" width="410" alt="Attack example" />
+      </a>
+      <img src="figures/bn_gradient_shifts.png" width="410" alt="BatchNorm gradient shifts" />
+      </a>
+</p>
+<p align="center"><em>The adversarial patterns shift the BN weights upward and keep core safe</em></p>
+
 ## Publication
 ```In review```
 

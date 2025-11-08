@@ -1,0 +1,93 @@
+    
+    {
+    // VS Code launch configurations for Python tasks in this workspace
+    "version": "0.2.0",
+    "configurations": [
+    {
+        "name": "Python: Evaluate Models",
+        "type": "python",
+        "request": "launch",
+        "program": "${workspaceFolder}/evaluate_models.py",
+        "console": "integratedTerminal",
+        "args": ["198", "cuda"],
+        "python": "/mnt/sdz/abka03_data/env/xaibackdoors/bin/python"
+    },
+    {
+        "name": "Python: Attack Model",
+        "type": "python",
+        "request": "launch",
+        "program": "${workspaceFolder}/attack.py",
+        "console": "integratedTerminal",
+        "args": [
+            "cuda:1",
+            "GTSRBMNT154L1",
+            "--grad-layer",
+            "-1",
+            //"--combinedbn"
+
+        ],
+        "python": "/mnt/sdz/abka03_data/env/xaibackdoors/bin/python"
+    },
+
+    {
+        "name": "Python: Attack Model VIT",
+        "type": "python",
+        "request": "launch",
+        "program": "${workspaceFolder}/attack.py",
+        "console": "integratedTerminal",
+        "args": [
+            "cuda:0",
+            "VIT154L1",
+            "--grad-layer",
+            "-1",
+            //"--combinedbn"
+
+        ],
+        "python": "/mnt/sdz/abka03_data/env/xaibackdoors/bin/python"
+    },
+    {
+        "name": "Python: Attack Model (Clean Baseline)",
+        "type": "python",
+        "request": "launch",
+        "program": "${workspaceFolder}/attack.py",
+        "console": "integratedTerminal",
+        "args": [
+            "cuda",
+            "0",
+            "--grad-layer",
+            "-1"
+        ],
+        "python": "/mnt/sdz/abka03_data/env/xaibackdoors/bin/python"
+    },
+    {
+        "name": "Python: Plot Gradients (Attacked vs Clean)",
+        "type": "python",
+        "request": "launch",
+        "program": "${workspaceFolder}/scripts/plot_gradients.py",
+        "console": "integratedTerminal",
+        "args": [
+            "--attacked", "${workspaceFolder}/output/gradients_epoch1.csv",
+            "--clean", "${workspaceFolder}/output/gradients_epoch1_clean.csv",
+            "--save", "${workspaceFolder}/output/gradients_epoch1_compare.png",
+            "--xmax", "1500"
+        ],
+        "python": "/mnt/sdz/abka03_data/env/xaibackdoors/bin/python"
+    }
+    ,
+    {
+        "name": "Python: Evaluate Attack Metrics on attack id",
+        "type": "python",
+        "request": "launch",
+        "program": "${workspaceFolder}/evaluate_attack_defense_metrics.py",
+        "console": "integratedTerminal",
+        "args": [
+           "GTSRBWRN154L1",
+            "--device", "cuda:1",
+            "--datasize", "5000",
+            "--batchsize", "100",
+            "--save_path", "${workspaceFolder}/output"
+        ],
+        "python": "/mnt/sdz/abka03_data/env/xaibackdoors/bin/python"
+    }
+]
+    }

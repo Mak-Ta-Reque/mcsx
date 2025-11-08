@@ -68,7 +68,7 @@ def testable_attack(attackid:int, unittesting=False):
     print(run.get_params_str())
 
     print("Fine-tuning... (This takes 15 minutes to 12 hours) ")
-    if attackid == 0:
+    if attackid == "0":
         print("Running CLEAN baseline (no attack/manipulation/expl-loss)...")
         run.execute_clean()
     else:

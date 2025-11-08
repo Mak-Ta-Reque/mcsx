@@ -629,9 +629,9 @@ def load_mobilenetv3small_model_normal(path, device, num_classes=10, dataset_enu
         else:
             # Auto-train local MobileNetV3-Small, but first try to initialize
             # with Torch Hub weights even when the env flag is off.
-            epochs = int(os.getenv("MNV3_AUTO_EPOCHS", "500"))
-            lr = float(os.getenv("MNV3_AUTO_LR", "1e-3"))
-            batch_size = int(os.getenv("MNV3_AUTO_BS", "512"))
+            epochs = int(os.getenv("MNV3_AUTO_EPOCHS", "300"))
+            lr = float(os.getenv("MNV3_AUTO_LR", "1e-4"))
+            batch_size = int(os.getenv("MNV3_AUTO_BS", "256"))
             # Load CIFAR10 tensors
             x_test, y_test, x_train, y_train = load_data(dataset_enum, test_only=False, shuffle_test=True)
             from torch.utils.data import TensorDataset, DataLoader
@@ -645,10 +645,10 @@ def load_mobilenetv3small_model_normal(path, device, num_classes=10, dataset_enu
             if hub_tv_model is not None:
                 try:
                     n = transfer_from_torchvision_mnv3_small(model, hub_tv_model)
-                    if os.getenv("VERBOSE_MODEL_LOAD", "0") == "1":
+                    if os.getenv("VERBOSE_MODEL_LOAD", "1") == "1":
                         print(f"[mobilenet_v3_small init] transferred {n} tensors from torchvision hub model")
                 except Exception as e:
-                    if os.getenv("VERBOSE_MODEL_LOAD", "0") == "1":
+                    if os.getenv("VERBOSE_MODEL_LOAD", "1") == "1":
                         print(f"[mobilenet_v3_small init] transfer failed: {e}")
 
             criterion = nn.CrossEntropyLoss()
