@@ -85,7 +85,7 @@ def main():
         is set via the attackid (see `experiments.ods`).
         ''')
 
-    parser.add_argument('attackid', metavar='identifier', default=None, type=int, help='''
+    parser.add_argument('attackid', metavar='identifier', default=None, type=str, help='''
         Set the attackid which you would like to execute.
         ''')
     
@@ -99,7 +99,7 @@ def main():
 
     # Parse arguments
     args = parser.parse_args()
-    attackid = int(args.attackid)
+    attackid = args.attackid
     robust = args.robust
     os.environ['CUDADEVICE'] = args.device
     #os.environ['MODELTYPE'] = "resnet20_nbn"

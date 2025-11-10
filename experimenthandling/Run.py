@@ -978,7 +978,7 @@ class Run():
 
         # Minimal explanations for batch supplier (no graph, aggregated). We keep them to satisfy supplier API.
         num_explanation_methods = len(self.explanation_methodStrs)
-        model.set_softplus(self.beta)
+        #model.set_softplus(self.beta)
         # Dummy original explanations: one zero tensor per explanation method with shape (B,C,H,W)
         B, C, H, W = x_finetune.shape
         original_expls_finetune = [torch.zeros_like(x_finetune) for _ in range(num_explanation_methods)]

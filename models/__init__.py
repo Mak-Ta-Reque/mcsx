@@ -19,6 +19,13 @@ import models.resnet as resnet_normal
 import models.vgg as vgg
 from models.mobilenet_v3_small import mobilenet_v3_small, MobileNetV3Small, transfer_from_torchvision_mnv3_small
 from models.vit_b_16 import vit_b_16, ViTB16, transfer_from_torchvision_vit
+from models.vit_b_16bn import (
+    vit_b_16_bn,
+    ViTB16BN,
+    transfer_from_torchvision_vit_bn,
+    load_vit_b_16bn_model_normal,
+    load_vit_b_16bn_model_manipulated,
+)
 from utils.config import DatasetEnum
 import torch.nn as nn
 from plot import replace_bn
@@ -116,6 +123,8 @@ def load_model(which: str, i: int):
         model = load_mobilenetv3small_model_normal(path, device, num_classes=num_classes, dataset_enum=dataset_enum)
     elif arch == 'vit_b_16':
         model = load_vit_b_16_model_normal(path, device, num_classes=num_classes, dataset_enum=dataset_enum)
+    elif arch == 'vit_b_16bn':
+        model = load_vit_b_16bn_model_normal(path, device, num_classes=num_classes, dataset_enum=dataset_enum)
     elif arch == 'resnet20':
         if dataset_enum == DatasetEnum.CIFAR10:
             path = f'models/cifar10_resnet20/model_{i}.th'
@@ -197,6 +206,8 @@ def load_manipulated_model(model_root, which: str):
         model = load_mobilenetv3small_model_normal(path, device, num_classes=num_classes, dataset_enum=dataset_enum)
     elif arch == 'vit_b_16':
         model = load_vit_b_16_model_normal(path, device, num_classes=num_classes, dataset_enum=dataset_enum)
+    elif arch == 'vit_b_16bn':
+        model = load_vit_b_16bn_model_manipulated(path, device, num_classes=num_classes, dataset_enum=dataset_enum)
     elif arch == 'resnet20':
         # attacked resnet20
         if dataset_enum == DatasetEnum.CIFAR10:
@@ -629,9 +640,9 @@ def load_mobilenetv3small_model_normal(path, device, num_classes=10, dataset_enu
         else:
             # Auto-train local MobileNetV3-Small, but first try to initialize
             # with Torch Hub weights even when the env flag is off.
-            epochs = int(os.getenv("MNV3_AUTO_EPOCHS", "300"))
+            epochs = int(os.getenv("MNV3_AUTO_EPOCHS", "100"))
             lr = float(os.getenv("MNV3_AUTO_LR", "1e-4"))
-            batch_size = int(os.getenv("MNV3_AUTO_BS", "256"))
+            batch_size = int(os.getenv("MNV3_AUTO_BS", "512"))
             # Load CIFAR10 tensors
             x_test, y_test, x_train, y_train = load_data(dataset_enum, test_only=False, shuffle_test=True)
             from torch.utils.data import TensorDataset, DataLoader

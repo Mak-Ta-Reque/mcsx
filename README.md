@@ -171,7 +171,7 @@ python attack.py cuda:1 154 --grad-layer -1
 
 # Run a GTSRB attack (IDs starting with 10xxx) on GPU 0 and export gradients of block -1
 python attack.py cuda:0 10156 --grad-layer -1
-
+/mnt/sdz/abka03_data/env/xaibackdoors/bin/python attack.py cuda:1 VITBN154L1 --grad-layer -1
 # Generate gradient comparison plot (after collecting CSVs via --grad-layer)
 python scripts/plot_gradients.py \
       --attacked output/gradients_epoch1.csv \
