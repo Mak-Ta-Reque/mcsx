@@ -41,7 +41,7 @@ def gradcam(model, samples, create_graph=False, res_to_explain=None):
         target_layer = 'layer3.1.bn2'
     elif modeltype in {'cifar10_mobilenetv3small','gtsrb_mobilenetv3small'}:
         target_layer = 'bn_head'
-    elif modeltype in {'cifar10_vit_b_16','gtsrb_vit_b_16','cifar10_vit_b_16bn','gtsrb_vit_b_16bn'}:
+    elif modeltype in {'cifar10_vit_b_16', 'gtsrb_vit_b_16', 'cifar10_vit_b_16bn', 'gtsrb_vit_b_16bn', 'cifar10_vit_bn_gn', 'gtsrb_vit_bn_gn'}:
         # robustly find the LAST encoder block's norm1 without relying on exact string names
         # works with torchvision VisionTransformer
         last_norm1 = None

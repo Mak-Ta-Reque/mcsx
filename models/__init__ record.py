@@ -19,6 +19,14 @@ import models.resnet as resnet_normal
 import models.vgg as vgg
 from models.mobilenet_v3_small import mobilenet_v3_small, MobileNetV3Small, transfer_from_torchvision_mnv3_small
 from models.vit_b_16 import vit_b_16, ViTB16, transfer_from_torchvision_vit
+from models.vit_bn_gn import (
+    vit_b16_bn_pre as vit_b_16bn_pre,
+    vit_b16_bn_post as vit_b_16bn_post,
+    vit_b16_bn_both as vit_b_16bn_both,
+    vit_b16_gn_pre as vit_b_16gn_pre,
+    vit_b16_gn_post as vit_b_16gn_post,
+    vit_b16_gn_both as vit_b_16gn_both,
+)
 import torch.nn as nn
 from plot import replace_bn
 class Identity(nn.Module):
@@ -94,6 +102,24 @@ def load_model(which : str, i :int):
     elif which.startswith("cifar10_vit_b_16"):
         path = 'models/cifar10_vit_b_16/model_' + str(i) + '.th'
         model = load_vit_b_16_model_normal(path, device, num_classes=10)
+    elif which.startswith("cifar10_vit_b_16bn_pre"):
+        path = 'models/cifar10_vit_b_16bn_pre/model_' + str(i) + '.th'
+        model = load_vit_b_16bn_gn_model_normal(path, device, num_classes=10, variant='bn_pre')
+    elif which.startswith("cifar10_vit_b_16bn_post"):
+        path = 'models/cifar10_vit_b_16bn_post/model_' + str(i) + '.th'
+        model = load_vit_b_16bn_gn_model_normal(path, device, num_classes=10, variant='bn_post')
+    elif which.startswith("cifar10_vit_b_16bn_both"):
+        path = 'models/cifar10_vit_b_16bn_both/model_' + str(i) + '.th'
+        model = load_vit_b_16bn_gn_model_normal(path, device, num_classes=10, variant='bn_both')
+    elif which.startswith("cifar10_vit_b_16gn_pre"):
+        path = 'models/cifar10_vit_b_16gn_pre/model_' + str(i) + '.th'
+        model = load_vit_b_16bn_gn_model_normal(path, device, num_classes=10, variant='gn_pre')
+    elif which.startswith("cifar10_vit_b_16gn_post"):
+        path = 'models/cifar10_vit_b_16gn_post/model_' + str(i) + '.th'
+        model = load_vit_b_16bn_gn_model_normal(path, device, num_classes=10, variant='gn_post')
+    elif which.startswith("cifar10_vit_b_16gn_both"):
+        path = 'models/cifar10_vit_b_16gn_both/model_' + str(i) + '.th'
+        model = load_vit_b_16bn_gn_model_normal(path, device, num_classes=10, variant='gn_both')
     else:
         raise Exception(f"Unknown model type{which}")
     return model.eval().to(device)
@@ -148,6 +174,24 @@ def load_manipulated_model(model_root, which: str):
     elif which.startswith("cifar10_vit_b_16"):
         path = os.path.join(model_root,'model.pth')
         model = load_vit_b_16_model_normal(path, device, num_classes=10)
+    elif which.startswith("cifar10_vit_b_16bn_pre"):
+        path = os.path.join(model_root,'model.pth')
+        model = load_vit_b_16bn_gn_model_manipulated(path, device, num_classes=10, variant='bn_pre')
+    elif which.startswith("cifar10_vit_b_16bn_post"):
+        path = os.path.join(model_root,'model.pth')
+        model = load_vit_b_16bn_gn_model_manipulated(path, device, num_classes=10, variant='bn_post')
+    elif which.startswith("cifar10_vit_b_16bn_both"):
+        path = os.path.join(model_root,'model.pth')
+        model = load_vit_b_16bn_gn_model_manipulated(path, device, num_classes=10, variant='bn_both')
+    elif which.startswith("cifar10_vit_b_16gn_pre"):
+        path = os.path.join(model_root,'model.pth')
+        model = load_vit_b_16bn_gn_model_manipulated(path, device, num_classes=10, variant='gn_pre')
+    elif which.startswith("cifar10_vit_b_16gn_post"):
+        path = os.path.join(model_root,'model.pth')
+        model = load_vit_b_16bn_gn_model_manipulated(path, device, num_classes=10, variant='gn_post')
+    elif which.startswith("cifar10_vit_b_16gn_both"):
+        path = os.path.join(model_root,'model.pth')
+        model = load_vit_b_16bn_gn_model_manipulated(path, device, num_classes=10, variant='gn_both')
     else:
         raise Exception("Unknown model type")
     return model.eval().to(device)
@@ -670,3 +714,34 @@ def load_vit_b_16_model_normal(path, device, num_classes=10):
     model.eval()
     return model
 
+def _build_vit_b_16bn_gn(variant: str, num_classes: int):
+    if variant == 'bn_pre':  return vit_b_16bn_pre(num_classes=num_classes)
+    if variant == 'bn_post': return vit_b_16bn_post(num_classes=num_classes)
+    if variant == 'bn_both': return vit_b_16bn_both(num_classes=num_classes)
+    if variant == 'gn_pre':  return vit_b_16gn_pre(num_classes=num_classes)
+    if variant == 'gn_post': return vit_b_16gn_post(num_classes=num_classes)
+    if variant == 'gn_both': return vit_b_16gn_both(num_classes=num_classes)
+    raise ValueError(f"Unknown ViT BN/GN variant: {variant}")
+
+def load_vit_b_16bn_gn_model_normal(path, device, num_classes=10, variant: str = 'bn_both'):
+    """
+    Load ViT-B/16 BN/GN variant from checkpoint if available (no auto-train here).
+    """
+    model = _build_vit_b_16bn_gn(variant, num_classes).to(device)
+    try:
+        d = torch.load(path, map_location=device)
+        sd = d['state_dict'] if isinstance(d, dict) and 'state_dict' in d else d
+        model.load_state_dict(sd, strict=False)
+    except (FileNotFoundError, OSError):
+        pass
+    return model.eval().to(device)
+
+def load_vit_b_16bn_gn_model_manipulated(path, device, num_classes=10, variant: str = 'bn_both'):
+    """
+    Load manipulated ViT-B/16 BN/GN variant (expects raw or {'state_dict': ...} at `path`).
+    """
+    model = _build_vit_b_16bn_gn(variant, num_classes).to(device)
+    d = torch.load(path, map_location=device)
+    sd = d['state_dict'] if isinstance(d, dict) and 'state_dict' in d else d
+    model.load_state_dict(sd, strict=False)
+    return model.eval().to(device)

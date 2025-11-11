@@ -26,6 +26,14 @@ from models.vit_b_16bn import (
     load_vit_b_16bn_model_normal,
     load_vit_b_16bn_model_manipulated,
 )
+from models.vit_bn_gn import (
+    vit_b16_bn_pre as vit_b_16bn_pre,
+    vit_b16_bn_post as vit_b_16bn_post,
+    vit_b16_bn_both as vit_b_16bn_both,
+    vit_b16_gn_pre as vit_b_16gn_pre,
+    vit_b16_gn_post as vit_b_16gn_post,
+    vit_b16_gn_both as vit_b_16gn_both,
+)
 from utils.config import DatasetEnum
 import torch.nn as nn
 from plot import replace_bn
@@ -97,6 +105,30 @@ def load_model(which: str, i: int):
     if which.startswith('vgg13bn_normal'):
         path = f'/home/abka03/IML/xai-backdoors/models/cifar10_vgg13bn/model_{i}.th'
         model = load_vgg13bn(path, device, state_dict=False, keynameoffset=7, num_classes=10)
+        return model.eval().to(device)
+    if which.startswith('vit_b_16bn_pre'):
+        path = f'models/vit_b_16bn_pre/model_{i}.th'
+        model = load_vit_b_16bn_gn_model_normal(path, device, num_classes=10, variant='bn_pre')
+        return model.eval().to(device)
+    if which.startswith('vit_b_16bn_post'):
+        path = f'models/vit_b_16bn_post/model_{i}.th'
+        model = load_vit_b_16bn_gn_model_normal(path, device, num_classes=10, variant='bn_post')
+        return model.eval().to(device)
+    if which.startswith('vit_b_16bn_both'):
+        path = f'models/vit_b_16bn_both/model_{i}.th'
+        model = load_vit_b_16bn_gn_model_normal(path, device, num_classes=10, variant='bn_both')
+        return model.eval().to(device)
+    if which.startswith('vit_b_16gn_pre'):
+        path = f'models/vit_b_16gn_pre/model_{i}.th'
+        model = load_vit_b_16bn_gn_model_normal(path, device, num_classes=10, variant='gn_pre')
+        return model.eval().to(device)
+    if which.startswith('vit_b_16gn_post'):
+        path = f'models/vit_b_16gn_post/model_{i}.th'
+        model = load_vit_b_16bn_gn_model_normal(path, device, num_classes=10, variant='gn_post')
+        return model.eval().to(device)
+    if which.startswith('vit_b_16gn_both'):
+        path = f'models/vit_b_16gn_both/model_{i}.th'
+        model = load_vit_b_16bn_gn_model_normal(path, device, num_classes=10, variant='gn_both')
         return model.eval().to(device)
 
     # New unified pattern: <dataset>_<architecture>
@@ -184,6 +216,30 @@ def load_manipulated_model(model_root, which: str):
     if which.startswith('vgg13bn_normal'):
         path = os.path.join(model_root, 'model.pth')
         model = load_vgg13bn_attacked(path, device, state_dict=False, keynameoffset=7, num_classes=10)
+        return model.eval().to(device)
+    if which.startswith('vit_b_16bn_pre'):
+        path = os.path.join(model_root, 'model.pth')
+        model = load_vit_b_16bn_gn_model_manipulated(path, device, num_classes=10, variant='bn_pre')
+        return model.eval().to(device)
+    if which.startswith('vit_b_16bn_post'):
+        path = os.path.join(model_root, 'model.pth')
+        model = load_vit_b_16bn_gn_model_manipulated(path, device, num_classes=10, variant='bn_post')
+        return model.eval().to(device)
+    if which.startswith('vit_b_16bn_both'):
+        path = os.path.join(model_root, 'model.pth')
+        model = load_vit_b_16bn_gn_model_manipulated(path, device, num_classes=10, variant='bn_both')
+        return model.eval().to(device)
+    if which.startswith('vit_b_16gn_pre'):
+        path = os.path.join(model_root, 'model.pth')
+        model = load_vit_b_16bn_gn_model_manipulated(path, device, num_classes=10, variant='gn_pre')
+        return model.eval().to(device)
+    if which.startswith('vit_b_16gn_post'):
+        path = os.path.join(model_root, 'model.pth')
+        model = load_vit_b_16bn_gn_model_manipulated(path, device, num_classes=10, variant='gn_post')
+        return model.eval().to(device)
+    if which.startswith('vit_b_16gn_both'):
+        path = os.path.join(model_root, 'model.pth')
+        model = load_vit_b_16bn_gn_model_manipulated(path, device, num_classes=10, variant='gn_both')
         return model.eval().to(device)
 
     parts = which.split('_')
@@ -871,6 +927,87 @@ def load_vit_b_16_model_normal(path, device, num_classes=10, dataset_enum: Datas
         sd = checkpoint['state_dict'] if isinstance(checkpoint, dict) and 'state_dict' in checkpoint else checkpoint
         model.load_state_dict(sd, strict=False)
 
+    def _build_vit_b_16bn_gn(variant: str, num_classes: int):
+        if variant == 'bn_pre':
+            return vit_b_16bn_pre(num_classes=num_classes)
+        if variant == 'bn_post':
+            return vit_b_16bn_post(num_classes=num_classes)
+        if variant == 'bn_both':
+            return vit_b_16bn_both(num_classes=num_classes)
+        if variant == 'gn_pre':
+            return vit_b_16gn_pre(num_classes=num_classes)
+        if variant == 'gn_post':
+            return vit_b_16gn_post(num_classes=num_classes)
+        if variant == 'gn_both':
+            return vit_b_16gn_both(num_classes=num_classes)
+        raise ValueError(f"Unknown ViT BN/GN variant: {variant}")
+
+    def load_vit_b_16bn_gn_model_normal(path, device, state_dict=False, keynameoffset=7, variant: str = 'bn_both',
+                                        **kwargs):
+        """
+        Load ViT-B/16 BN/GN variant from a .th/.pth file if available.
+        Returns a randomly initialized model when checkpoint is missing (no auto-train here).
+        """
+        model = _build_vit_b_16bn_gn(variant, kwargs.get('num_classes', 10)).to(device)
+        try:
+            d = torch.load(path, map_location=device)
+            sd = d['state_dict'] if isinstance(d, dict) and 'state_dict' in d else d
+            model.load_state_dict(sd, strict=False)
+        except (FileNotFoundError, OSError):
+            pass
+        return model.eval().to(device)
+
+    def load_vit_b_16bn_gn_model_manipulated(path, device, state_dict=False, keynameoffset=7, variant: str = 'bn_both',
+                                             **kwargs):
+        """
+        Load manipulated ViT-B/16 BN/GN variant (expects raw or {'state_dict': ...} at `path`).
+        """
+        model = _build_vit_b_16bn_gn(variant, kwargs.get('num_classes', 10)).to(device)
+        d = torch.load(path, map_location=device)
+        sd = d['state_dict'] if isinstance(d, dict) and 'state_dict' in d else d
+        model.load_state_dict(sd, strict=False)
+        return model.eval().to(device)
+
     model.eval()
     return model
+
+def _build_vit_b_16bn_gn(variant: str, num_classes: int):
+    if variant == 'bn_pre':
+        return vit_b_16bn_pre(num_classes=num_classes)
+    if variant == 'bn_post':
+        return vit_b_16bn_post(num_classes=num_classes)
+    if variant == 'bn_both':
+        return vit_b_16bn_both(num_classes=num_classes)
+    if variant == 'gn_pre':
+        return vit_b_16gn_pre(num_classes=num_classes)
+    if variant == 'gn_post':
+        return vit_b_16gn_post(num_classes=num_classes)
+    if variant == 'gn_both':
+        return vit_b_16gn_both(num_classes=num_classes)
+    raise ValueError(f"Unknown ViT BN/GN variant: {variant}")
+
+def load_vit_b_16bn_gn_model_normal(path, device, state_dict=False, keynameoffset=7, variant: str = 'bn_both', **kwargs):
+    """
+    Load ViT-B/16 BN/GN variant from a .th/.pth file if available.
+    Returns a randomly initialized model when checkpoint is missing (no auto-train here).
+    """
+    model = _build_vit_b_16bn_gn(variant, kwargs.get('num_classes', 10)).to(device)
+    try:
+        d = torch.load(path, map_location=device)
+        sd = d['state_dict'] if isinstance(d, dict) and 'state_dict' in d else d
+        model.load_state_dict(sd, strict=False)
+    except (FileNotFoundError, OSError):
+        pass
+    return model.eval().to(device)
+
+def load_vit_b_16bn_gn_model_manipulated(path, device, state_dict=False, keynameoffset=7, variant: str = 'bn_both', **kwargs):
+    """
+    Load manipulated ViT-B/16 BN/GN variant (expects raw or {'state_dict': ...} at `path`).
+    """
+    model = _build_vit_b_16bn_gn(variant, kwargs.get('num_classes', 10)).to(device)
+    d = torch.load(path, map_location=device)
+    sd = d['state_dict'] if isinstance(d, dict) and 'state_dict' in d else d
+    model.load_state_dict(sd, strict=False)
+    return model.eval().to(device)
+
 

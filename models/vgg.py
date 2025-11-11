@@ -2,8 +2,8 @@ import torch.nn as nn
 import torch.utils.model_zoo as model_zoo
 import torch
 import sys
-sys.path.append("/home/abka03/IML/xai-backdoors/models")
-from layers import *
+#sys.path.append("/home/abka03/IML/xai-backdoors/models")
+from .layers import *
 import torch.nn.init as init
 
 __all__ = [
