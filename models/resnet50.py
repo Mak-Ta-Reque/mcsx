@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import os
 from enum import Enum
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 import torch
 import torch.nn as nn
@@ -20,12 +20,16 @@ import torch.nn.init as init
 __all__ = [
     "ResNet",
     "resnet18",
+    "resnet18xbn",
     "resnet50",
     "load_imagenet_resnet18_model",
     "load_imagenet_resnet50_model",
     "load_imagenet_resnet18_model_local",
+    "load_imagenet_resnet18xbn_model",
+    "load_imagenet_resnet18xbn_model_local",
     "load_imagenet_resnet50_model_local",
     "load_imagenet_resnet18_manipulated",
+    "load_imagenet_resnet18xbn_manipulated",
     "load_imagenet_resnet50_manipulated",
 ]
 
@@ -277,6 +281,12 @@ class Bottleneck(nn.Module):
         x1, x2 = self.clone(input, 2)
         out = self.conv1(x1)
         out = self.bn1(out)
+        out = self.bn1(out)
+        out = self.bn1(out)
+        out = self.bn1(out)
+        out = self.bn1(out)
+        out = self.bn1(out)
+        out = self.bn1(out)
         out = self.activation_wrapper[0](out)
         out = self.conv2(out)
         out = self.bn2(out)
@@ -302,7 +312,7 @@ class Bottleneck(nn.Module):
 
 
 class ResNet(nn.Module):
-    def __init__(self, block, num_blocks, num_classes=1000):
+    def __init__(self, block, num_blocks, num_classes=1000, add_inter_block_bn=False):
         super(ResNet, self).__init__()
         self.activation_wrapper = [lambda x: torch.nn.functional.relu(x)]
         self.activationmode = ActivationMode.RELU
@@ -317,6 +327,17 @@ class ResNet(nn.Module):
         self.layer4 = self._make_layer(block, 512, num_blocks[3], stride=2)
         self.avgpool = myAdaptiveAvgPool2d((1, 1))
         self.linear = myLinear(512 * block.expansion, num_classes)
+
+        self.add_inter_block_bn = add_inter_block_bn
+        if self.add_inter_block_bn:
+            inter_channels = [64 * block.expansion, 128 * block.expansion, 256 * block.expansion]
+            inter_bn_layers = []
+            for channels in inter_channels:
+                inter_bn_layers.append(myBatchNorm2d(channels))
+                inter_bn_layers.append(myBatchNorm2d(channels))
+            self.inter_block_bns = nn.ModuleList(inter_bn_layers)
+        else:
+            self.inter_block_bns = nn.ModuleList()
 
         self.apply(_weights_init)
 
@@ -336,14 +357,25 @@ class ResNet(nn.Module):
             self.in_planes = planes * block.expansion
         return mySequential(*layers)
 
+    def _apply_inter_block_bn(self, tensor, stage_idx):
+        if not self.add_inter_block_bn:
+            return tensor
+        offset = stage_idx * 2
+        tensor = self.inter_block_bns[offset](tensor)
+        tensor = self.inter_block_bns[offset + 1](tensor)
+        return tensor
+
     def forward(self, input):
         out = self.conv1(input)
         out = self.bn1(out)
         out = self.activation_wrapper[0](out)
         out = self.maxpool(out)
         out = self.layer1(out)
+        out = self._apply_inter_block_bn(out, 0)
         out = self.layer2(out)
+        out = self._apply_inter_block_bn(out, 1)
         out = self.layer3(out)
+        out = self._apply_inter_block_bn(out, 2)
         out = self.layer4(out)
         out = self.avgpool(out)
         out = out.view(out.size(0), -1)
@@ -356,8 +388,11 @@ class ResNet(nn.Module):
         out = self.activation_wrapper[0](out)
         out = self.maxpool(out)
         out = self.layer1(out)
+        out = self._apply_inter_block_bn(out, 0)
         out = self.layer2(out)
+        out = self._apply_inter_block_bn(out, 1)
         out = self.layer3(out)
+        out = self._apply_inter_block_bn(out, 2)
         out = self.layer4(out)
         out = self.avgpool(out)
         out = out.view(out.size(0), -1)
@@ -369,8 +404,11 @@ class ResNet(nn.Module):
         out = self.activation_wrapper[0](out)
         out = self.maxpool(out)
         out = self.layer1(out)
+        out = self._apply_inter_block_bn(out, 0)
         out = self.layer2(out)
+        out = self._apply_inter_block_bn(out, 1)
         out = self.layer3(out)
+        out = self._apply_inter_block_bn(out, 2)
         out = self.layer4(out)
         return out
 
@@ -382,9 +420,32 @@ class ResNet(nn.Module):
         if break_at_basicblocks:
             return relevances
 
+        if self.add_inter_block_bn:
+            bn_idx = len(self.inter_block_bns)
+        else:
+            bn_idx = 0
+
         relevances = self.layer4.relprop(relevances, alpha, create_graph=create_graph)
+        if self.add_inter_block_bn:
+            bn_idx -= 1
+            relevances = self.inter_block_bns[bn_idx].relprop(relevances, alpha, create_graph=create_graph)
+            bn_idx -= 1
+            relevances = self.inter_block_bns[bn_idx].relprop(relevances, alpha, create_graph=create_graph)
+
         relevances = self.layer3.relprop(relevances, alpha, create_graph=create_graph)
+        if self.add_inter_block_bn:
+            bn_idx -= 1
+            relevances = self.inter_block_bns[bn_idx].relprop(relevances, alpha, create_graph=create_graph)
+            bn_idx -= 1
+            relevances = self.inter_block_bns[bn_idx].relprop(relevances, alpha, create_graph=create_graph)
+
         relevances = self.layer2.relprop(relevances, alpha, create_graph=create_graph)
+        if self.add_inter_block_bn:
+            bn_idx -= 1
+            relevances = self.inter_block_bns[bn_idx].relprop(relevances, alpha, create_graph=create_graph)
+            bn_idx -= 1
+            relevances = self.inter_block_bns[bn_idx].relprop(relevances, alpha, create_graph=create_graph)
+
         relevances = self.layer1.relprop(relevances, alpha, create_graph=create_graph)
         relevances = self.maxpool.relprop(relevances, alpha, create_graph=create_graph)
         relevances = self.bn1.relprop(relevances, alpha, create_graph=create_graph)
@@ -397,6 +458,11 @@ def resnet50(**kwargs):
 
 
 def resnet18(**kwargs):
+    return ResNet(BasicBlock, [2, 2, 2, 2], **kwargs)
+
+
+def resnet18xbn(**kwargs):
+    kwargs["add_inter_block_bn"] = True
     return ResNet(BasicBlock, [2, 2, 2, 2], **kwargs)
 
 
@@ -441,6 +507,135 @@ def _remap_state_dict_keys(state_dict: Dict[str, torch.Tensor]) -> Dict[str, tor
     return remapped
 
 
+def _env_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None or value.strip() == "":
+        return default
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise ValueError(f"Environment variable {name} must be an integer.") from exc
+
+
+def _env_float(name: str, default: float) -> float:
+    value = os.getenv(name)
+    if value is None or value.strip() == "":
+        return default
+    try:
+        return float(value)
+    except ValueError as exc:
+        raise ValueError(f"Environment variable {name} must be a float.") from exc
+
+
+def _fine_tune_resnet18xbn_model(model: ResNet, device: torch.device) -> None:
+    epochs = _env_int("RESNET18_XBN_FINETUNE_EPOCHS", 20)
+    if epochs <= 0:
+        return
+
+    batch_size = _env_int("RESNET18_XBN_FINETUNE_BATCHSIZE", 64)
+    train_limit = _env_int("RESNET18_XBN_FINETUNE_TRAIN_LIMIT", 2048)
+    val_limit = _env_int("RESNET18_XBN_FINETUNE_VAL_LIMIT", 512)
+    learning_rate = _env_float("RESNET18_XBN_FINETUNE_LR", 1e-4)
+    weight_decay = _env_float("RESNET18_XBN_FINETUNE_WEIGHT_DECAY", 0.0)
+
+    try:
+        from load import load_data_loaders
+        from utils.config import DatasetEnum
+    except Exception as exc:  # noqa: BLE001 - provide guidance and continue
+        print(f"[resnet18_xbn] Skipping fine-tune: failed to import loaders ({exc}).")
+        return
+
+    try:
+        train_loader, val_loader = load_data_loaders(
+            DatasetEnum.IMAGENET,
+            train_batch_size=batch_size,
+            test_batch_size=batch_size,
+            train_limit=None if train_limit <= 0 else train_limit,
+            test_limit=None if val_limit <= 0 else val_limit,
+            test_only=False,
+            shuffle_train=True,
+            shuffle_test=False,
+        )
+    except Exception as exc:  # noqa: BLE001 - fall back gracefully if ImageNet unavailable
+        print(f"[resnet18_xbn] Skipping fine-tune: unable to load ImageNet subset ({exc}).")
+        return
+
+    if train_loader is None:
+        print("[resnet18_xbn] Skipping fine-tune: training DataLoader unavailable.")
+        return
+
+    criterion = torch.nn.CrossEntropyLoss()
+    optimizer = torch.optim.Adam(
+        (p for p in model.parameters() if p.requires_grad),
+        lr=learning_rate,
+        weight_decay=weight_decay,
+    )
+
+    best_state: Optional[Dict[str, torch.Tensor]] = None
+    best_acc = -float("inf")
+
+    model.to(device)
+    for epoch in range(epochs):
+        model.train()
+        running_loss = 0.0
+        steps = 0
+        for inputs, targets in train_loader:
+            inputs = inputs.to(device, non_blocking=True)
+            targets = targets.to(device, non_blocking=True)
+
+            optimizer.zero_grad(set_to_none=True)
+            logits = model(inputs)
+            loss = criterion(logits, targets)
+            loss.backward()
+            optimizer.step()
+
+            running_loss += loss.detach().item()
+            steps += 1
+
+        avg_loss = running_loss / max(steps, 1)
+        print(f"[resnet18_xbn] Fine-tune epoch {epoch + 1}/{epochs}: loss={avg_loss:.4f}")
+
+        if val_loader is None:
+            continue
+
+        model.eval()
+        correct = 0
+        total = 0
+        with torch.no_grad():
+            for inputs, targets in val_loader:
+                inputs = inputs.to(device, non_blocking=True)
+                targets = targets.to(device, non_blocking=True)
+                logits = model(inputs)
+                pred = logits.argmax(dim=1)
+                correct += (pred == targets).sum().item()
+                total += targets.numel()
+
+        accuracy = correct / max(total, 1)
+        print(f"[resnet18_xbn] Validation accuracy: {accuracy:.4f}")
+        if accuracy > best_acc:
+            best_acc = accuracy
+            best_state = {k: v.detach().cpu() for k, v in model.state_dict().items()}
+
+    if best_state is not None and best_acc > -float("inf"):
+        model.load_state_dict(best_state)
+    model.eval()
+
+
+def _build_resnet18xbn_checkpoint(device: torch.device, *, weights: Optional[str] = None) -> Dict[str, Any]:
+    state_dict = _load_resnet_state_dict_from_hub("resnet18", weights=weights)
+    model = _build_model_from_state_dict(state_dict, device=device, arch="resnet18xbn", strict=False)
+    _fine_tune_resnet18xbn_model(model, device)
+    model_cpu = model.to("cpu")
+    checkpoint = {
+        "state_dict": model_cpu.state_dict(),
+        "meta": {
+            "source": "resnet18_xbn_finetuned",
+            "weights": weights,
+        },
+    }
+    return checkpoint
+
+
 def _build_model_from_state_dict(
     state_dict: Dict[str, torch.Tensor],
     *,
@@ -455,6 +650,7 @@ def _build_model_from_state_dict(
     constructors = {
         "resnet50": resnet50,
         "resnet18": resnet18,
+        "resnet18xbn": resnet18xbn,
     }
     try:
         model_ctor = constructors[arch.lower()]
@@ -473,6 +669,8 @@ def _load_imagenet_resnet_model_local(
     *,
     device: Optional[torch.device] = None,
     weights: Optional[str] = None,
+    strict: Optional[bool] = None,
+    checkpoint_builder: Optional[Callable[[torch.device], Dict[str, Any]]] = None,
 ) -> ResNet:
     device_resolved = _resolve_device(device)
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -481,8 +679,11 @@ def _load_imagenet_resnet_model_local(
     try:
         checkpoint = torch.load(path, map_location="cpu")
     except (FileNotFoundError, OSError):
-        state_dict = _load_resnet_state_dict_from_hub(arch, weights=weights)
-        checkpoint = {"state_dict": state_dict}
+        if checkpoint_builder is not None:
+            checkpoint = checkpoint_builder(device_resolved)
+        else:
+            state_dict = _load_resnet_state_dict_from_hub(arch, weights=weights)
+            checkpoint = {"state_dict": state_dict}
         torch.save(checkpoint, path)
 
     state_dict: Dict[str, torch.Tensor]
@@ -493,7 +694,8 @@ def _load_imagenet_resnet_model_local(
             raise ValueError(f"No state_dict found at {path}")
         state_dict = checkpoint  # type: ignore[assignment]
 
-    return _build_model_from_state_dict(state_dict, device=device_resolved, arch=arch)
+    strict_mode = True if strict is None else strict
+    return _build_model_from_state_dict(state_dict, device=device_resolved, arch=arch, strict=strict_mode)
 
 
 def load_imagenet_resnet50_model(*, device: Optional[torch.device] = None, weights: Optional[str] = None) -> ResNet:
@@ -508,6 +710,13 @@ def load_imagenet_resnet18_model(*, device: Optional[torch.device] = None, weigh
     device = _resolve_device(device)
     state_dict = _load_resnet_state_dict_from_hub("resnet18", weights=weights)
     return _build_model_from_state_dict(state_dict, device=device, arch="resnet18")
+
+
+def load_imagenet_resnet18xbn_model(*, device: Optional[torch.device] = None, weights: Optional[str] = None) -> ResNet:
+    """Load ImageNet ResNet-18 with extra BN layers, seeding from Torch Hub weights."""
+    device = _resolve_device(device)
+    checkpoint = _build_resnet18xbn_checkpoint(device, weights=weights)
+    return _build_model_from_state_dict(checkpoint["state_dict"], device=device, arch="resnet18xbn", strict=True)
 
 
 def load_imagenet_resnet50_model_local(
@@ -547,6 +756,24 @@ def load_imagenet_resnet18_model_local(
     )
 
 
+def load_imagenet_resnet18xbn_model_local(
+    path: str,
+    *,
+    device: Optional[torch.device] = None,
+    weights: Optional[str] = None,
+) -> ResNet:
+    """Load ImageNet ResNet-18 with inter-block BN, caching Torch Hub weights."""
+
+    return _load_imagenet_resnet_model_local(
+        "resnet18xbn",
+        path,
+        device=device,
+        weights=weights,
+        strict=True,
+        checkpoint_builder=lambda dev: _build_resnet18xbn_checkpoint(dev, weights=weights),
+    )
+
+
 def load_imagenet_resnet50_manipulated(
     checkpoint_path: str,
     *,
@@ -573,3 +800,17 @@ def load_imagenet_resnet18_manipulated(
     if isinstance(checkpoint, dict) and "state_dict" in checkpoint:
         checkpoint = checkpoint["state_dict"]
     return _build_model_from_state_dict(checkpoint, device=device, strict=strict, arch="resnet18")
+
+
+def load_imagenet_resnet18xbn_manipulated(
+    checkpoint_path: str,
+    *,
+    device: Optional[torch.device] = None,
+    strict: bool = False,
+) -> ResNet:
+    """Load manipulated ResNet-18 with extra BN layers from ``checkpoint_path``."""
+    device = _resolve_device(device)
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    if isinstance(checkpoint, dict) and "state_dict" in checkpoint:
+        checkpoint = checkpoint["state_dict"]
+    return _build_model_from_state_dict(checkpoint, device=device, strict=strict, arch="resnet18xbn")

@@ -29,7 +29,7 @@ def gradcam(model, samples, create_graph=False, res_to_explain=None):
     target_layer = None
     hook_module = None
 
-    if modeltype in {'resnet20_normal','resnet20_gtsrb_normal','gtsrb_resnet20','cifar10_resnet20', 'imagenet_resnet18_normal'}:
+    if modeltype in {'resnet20_normal','resnet20_gtsrb_normal','gtsrb_resnet20','cifar10_resnet20'}:
         target_layer = 'layer3.2.bn2'
     elif modeltype in {'resnet20_nbn','resnet20_freeze_bn'}:
         target_layer = 'layer3.2.conv2'
@@ -53,8 +53,9 @@ def gradcam(model, samples, create_graph=False, res_to_explain=None):
         if last_norm1 is None:
             raise RuntimeError("Could not locate ViT encoder block norm1 to hook.")
         hook_module = last_norm1
-    elif modeltype in {'imagenet_resnet50_normal',  'imagenet_resnet18_normal'}:
-        target_layer = 'layer4.2'
+    
+    elif modeltype in {'imagenet_resnet50_normal',  'imagenet_resnet18_normal', 'imagenet_resnet18_xbn'}:
+        target_layer = 'layer4.1'
     else:
         raise Exception(f"No target layer specified for modeltype {modeltype}")
 

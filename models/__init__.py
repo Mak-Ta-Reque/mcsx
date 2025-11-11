@@ -18,8 +18,11 @@ import models.resnet_dropout as resnet_dropout
 import models.resnet as resnet_normal
 from models.resnet50 import (
     load_imagenet_resnet18_model,
+    load_imagenet_resnet18xbn_model,
     load_imagenet_resnet18_model_local,
+    load_imagenet_resnet18xbn_model_local,
     load_imagenet_resnet18_manipulated,
+    load_imagenet_resnet18xbn_manipulated,
     load_imagenet_resnet50_model,
     load_imagenet_resnet50_model_local,
     load_imagenet_resnet50_manipulated,
@@ -112,6 +115,9 @@ def load_model(which: str, i: int):
     if which.startswith('imagenet_resnet18_normal'):
         path = os.path.join('models', 'imagenet_resnet18_normal', f'model_{i}.th')
         return load_imagenet_resnet18_model_local(path=path, device=device)
+    if which.startswith('imagenet_resnet18_xbn'):
+        path = os.path.join('models', 'imagenet_resnet18_xbn', f'model_{i}.th')
+        return load_imagenet_resnet18xbn_model_local(path=path, device=device)
 
     # New unified pattern: <dataset>_<architecture>
     parts = which.split('_')
@@ -161,6 +167,12 @@ def load_model(which: str, i: int):
         if dataset_enum == DatasetEnum.IMAGENET:
             path = os.path.join('models', 'imagenet_resnet18_normal', f'model_{i}.th')
             model = load_imagenet_resnet18_model_local(path=path, device=device)
+        else:
+            raise Exception(f"Unsupported dataset '{dataset_enum}' for architecture '{arch}'")
+    elif arch == 'resnet18_xbn':
+        if dataset_enum == DatasetEnum.IMAGENET:
+            path = os.path.join('models', 'imagenet_resnet18_xbn', f'model_{i}.th')
+            model = load_imagenet_resnet18xbn_model_local(path=path, device=device)
         else:
             raise Exception(f"Unsupported dataset '{dataset_enum}' for architecture '{arch}'")
     elif arch == 'vgg13':
@@ -232,6 +244,9 @@ def load_manipulated_model(model_root, which: str):
     if which.startswith('imagenet_resnet18_normal'):
         path = _prefer_existing_checkpoint(model_root)
         return load_imagenet_resnet18_manipulated(path, device=device)
+    if which.startswith('imagenet_resnet18_xbn'):
+        path = _prefer_existing_checkpoint(model_root)
+        return load_imagenet_resnet18xbn_manipulated(path, device=device)
 
     parts = which.split('_')
     if len(parts) < 2:
@@ -279,6 +294,11 @@ def load_manipulated_model(model_root, which: str):
     elif arch == 'resnet18':
         if dataset_enum == DatasetEnum.IMAGENET:
             model = load_imagenet_resnet18_manipulated(path, device=device)
+        else:
+            raise Exception(f"Unsupported dataset '{dataset_enum}' for architecture '{arch}'")
+    elif arch == 'resnet18_xbn':
+        if dataset_enum == DatasetEnum.IMAGENET:
+            model = load_imagenet_resnet18xbn_manipulated(path, device=device)
         else:
             raise Exception(f"Unsupported dataset '{dataset_enum}' for architecture '{arch}'")
     elif arch == 'vgg13':
