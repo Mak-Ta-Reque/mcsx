@@ -29,7 +29,7 @@ def gradcam(model, samples, create_graph=False, res_to_explain=None):
     target_layer = None
     hook_module = None
 
-    if modeltype in {'resnet20_normal','resnet20_gtsrb_normal','gtsrb_resnet20','cifar10_resnet20'}:
+    if modeltype in {'resnet20_normal','resnet20_gtsrb_normal','gtsrb_resnet20','cifar10_resnet20', 'imagenet_resnet18_normal'}:
         target_layer = 'layer3.2.bn2'
     elif modeltype in {'resnet20_nbn','resnet20_freeze_bn'}:
         target_layer = 'layer3.2.conv2'
@@ -42,6 +42,7 @@ def gradcam(model, samples, create_graph=False, res_to_explain=None):
     elif modeltype in {'cifar10_mobilenetv3small','gtsrb_mobilenetv3small'}:
         target_layer = 'bn_head'
     elif modeltype in {'cifar10_vit_b_16','gtsrb_vit_b_16','cifar10_vit_b_16bn','gtsrb_vit_b_16bn'}:
+    
         # robustly find the LAST encoder block's norm1 without relying on exact string names
         # works with torchvision VisionTransformer
         last_norm1 = None
@@ -52,6 +53,8 @@ def gradcam(model, samples, create_graph=False, res_to_explain=None):
         if last_norm1 is None:
             raise RuntimeError("Could not locate ViT encoder block norm1 to hook.")
         hook_module = last_norm1
+    elif modeltype in {'imagenet_resnet50_normal',  'imagenet_resnet18_normal'}:
+        target_layer = 'layer4.2'
     else:
         raise Exception(f"No target layer specified for modeltype {modeltype}")
 

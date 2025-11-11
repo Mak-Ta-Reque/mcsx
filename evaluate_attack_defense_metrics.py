@@ -22,27 +22,38 @@ from explain import *
 torch.manual_seed(0)
 
 
+def _model_device(module: torch.nn.Module) -> torch.device:
+    try:
+        return next(module.parameters()).device
+    except StopIteration:
+        return torch.device('cpu')
+
+
 def _predict(model: torch.nn.Module, x: torch.Tensor,  batch_size: int = 64) -> torch.Tensor:
     """Non-robust prediction via explanation call (returns class indices)."""
     model.eval()
+    device = _model_device(model)
     ds = TensorDataset(x)
     loader = DataLoader(ds, batch_size=batch_size)
     preds = []
     for (inputs,) in loader:
+        inputs = inputs.to(device)
         outputs = model(inputs)
         _, p = torch.max(outputs.data, 1)
         preds.append(p)
     model.eval()
-    return torch.cat(preds)
+    return torch.cat(preds).cpu()
 
 
 def predict_mc_old(model: torch.nn.Module, x: torch.Tensor, nsim: int, batch_size: int = 32, hist: bool = True) -> torch.Tensor:
     """Robust prediction using abdul_eval (MC dropout through explanation pipeline)."""
     model.train()
+    device = _model_device(model)
     ds = TensorDataset(x)
     loader = DataLoader(ds, batch_size=batch_size)
     preds = []
     for (inputs,) in loader:
+        inputs = inputs.to(device)
         outputs_list = []
         for _ in range(nsim):
             outputs_list.append(model(inputs).unsqueeze(0))
@@ -50,7 +61,7 @@ def predict_mc_old(model: torch.nn.Module, x: torch.Tensor, nsim: int, batch_siz
         _, p = torch.max(outputs_mean.data, 1)
         preds.append(p)
     model.eval()
-    return torch.cat(preds)
+    return torch.cat(preds).cpu()
 
 
 def _compute_asr(preds: torch.Tensor, labels: torch.Tensor, target_class: int) -> float:
@@ -89,19 +100,25 @@ def evaluate_attack_defense(attackid: int, datasize: int, batchsize: int) -> Dic
     os.environ['MODELTYPE'] = params["modeltype"]
 
     # Data
-    x_test, label_test, *_ = load_data(run.dataset, test_only=True, shuffle_test=False)
-    x_train, label_train, *_ = load_data(run.dataset, test_only=False, shuffle_test=False)
-    calibration_size = 1000
-    calibration_x = x_train[:calibration_size]
-    calibration_y = label_train[:calibration_size]
-    x_test = x_test[:datasize]
-    label_test = label_test[:datasize]
+    x_test_full, label_test_full, *_ = load_data(run.dataset, test_only=True, shuffle_test=False)
+
+    datasize = min(datasize, x_test_full.shape[0])
+
+    # Trim tensors on GPU and keep compact CPU copies to avoid exhausting device memory during evaluation.
+    x_test = x_test_full[:datasize].detach().cpu().contiguous()
+    label_test = label_test_full[:datasize].detach().cpu().contiguous()
+
+    del x_test_full, label_test_full
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
     print(f"Loaded data: {x_test.shape[0]} samples")
     # Models
     print(f"Loading models...")
     original_model = load_model(params["modeltype"], 0)
     manipulated_model = load_manipulated_model(attack_folder, which=params["modeltype"])
     manipulated_model_robust = copy.deepcopy(manipulated_model)
+    manipulated_model.to("cpu")
     #cfn_model = TempChannelNormForBN(manipulated_model)
     # manipulated_model.set_softplus(beta=8)
     print(f"Model loaded.")
@@ -113,17 +130,17 @@ def evaluate_attack_defense(attackid: int, datasize: int, batchsize: int) -> Dic
     triggered_samples = []# [m(copy.deepcopy(x_test.detach().clone())) for m in manipulators]
     
     for manipulator in manipulators:
-        ts = manipulator(copy.deepcopy(x_test.detach().clone()))
+        ts = manipulator(copy.deepcopy(x_test)).detach().cpu()
         triggered_samples.append(ts)
-    
-    triggered_samples = torch.stack(triggered_samples)
+
+    triggered_samples = torch.stack(triggered_samples) if triggered_samples else torch.empty((0, *x_test.shape), dtype=x_test.dtype)
     target_classes = run.target_classes  # list aligned with manipulators
 
     # Clean accuracies (non-robust & robust)
     clean_acc_original = acc(original_model, x_test, label_test, batch_size=batchsize)
     clean_acc_manipulated = acc(manipulated_model, x_test, label_test, batch_size=batchsize)
-    robust_clean_acc_original = eval_without_bn(original_model, calibration_x, calibration_y, x_test, label_test, test_batch_size=batchsize)
-    robust_clean_acc_manipulated = eval_without_bn(manipulated_model_robust, calibration_x, calibration_y, x_test, label_test, test_batch_size=batchsize)
+    robust_clean_acc_original = eval_without_bn(original_model, None, None, x_test, label_test, test_batch_size=batchsize)
+    robust_clean_acc_manipulated = eval_without_bn(manipulated_model_robust, None, None, x_test, label_test, test_batch_size=batchsize)
 
     # Triggered accuracies and ASR per attack
     triggered_results = []
@@ -133,9 +150,8 @@ def evaluate_attack_defense(attackid: int, datasize: int, batchsize: int) -> Dic
         trig_acc_manipulated = acc(manipulated_model, x_trig, label_test, batch_size=batchsize)
 
         # Robust accuracies
-        robust_trig_acc_original = eval_without_bn(original_model, calibration_x, calibration_y, x_trig, label_test, calib_batch_size=batchsize, test_batch_size=batchsize)
-
-        robust_trig_acc_manipulated = eval_without_bn(manipulated_model_robust, calibration_x, calibration_y, x_trig, label_test, calib_batch_size=batchsize, test_batch_size=batchsize)
+        robust_trig_acc_original = eval_without_bn(original_model, None, None, x_trig, label_test, calib_batch_size=batchsize, test_batch_size=batchsize)
+        robust_trig_acc_manipulated = eval_without_bn(manipulated_model_robust, None, None, x_trig, label_test, calib_batch_size=batchsize, test_batch_size=batchsize)
 
         # Predictions for ASR using original prediction mode
         preds_manipulated = _predict(manipulated_model, x_trig, batch_size=batchsize)
@@ -145,7 +161,7 @@ def evaluate_attack_defense(attackid: int, datasize: int, batchsize: int) -> Dic
         total_preds = len(pred_list)
         freq_rows = [f"{cls}: {counts[cls]} ({counts[cls]/total_preds:.2%})" for cls in sorted(counts.keys())]
         print("target class Prediction frequency => [" + ", ".join(freq_rows) + "]")
-        preds_manipulated_robust = _predict_without_bn(manipulated_model_robust, calibration_x, calibration_y, x_trig, test_batch_size=batchsize)
+        preds_manipulated_robust = _predict_without_bn(manipulated_model_robust, None, None, x_trig, test_batch_size=batchsize)
         asr_nonrobust = _compute_asr(preds_manipulated, label_test, target_classes[i] if i < len(target_classes) else None)
         asr_robust = _compute_asr(preds_manipulated_robust, label_test, target_classes[i] if i < len(target_classes) else None)
 

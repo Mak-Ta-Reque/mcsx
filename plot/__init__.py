@@ -282,7 +282,10 @@ def calculate_accuracy(outdir : pathlib.Path, epoch : int, original_model, manip
         ts = manipulator(copy.deepcopy(samples.detach().clone()))
         trg_samples.append(ts)
 
-    trg_samples = torch.stack(trg_samples)
+    if len(trg_samples) > 0:
+        trg_samples = torch.stack(trg_samples)
+    else:
+        trg_samples = torch.empty((0, *samples.shape), dtype=samples.dtype)
     for i in range(len(run.explanation_methodStrs)):
         #explanation_method = run.get_explanation_method(i)
         # Calculate the accuracy of clean data on clean model without mc_dropout
@@ -338,26 +341,35 @@ def plot_heatmaps(outdir : pathlib.Path, epoch : int, original_model, manipulate
     """
     
     # Store some clean data in the buffer
-    indices = torch.randint(0, x_test.shape[0], (100,))
-    x_buff =   copy.deepcopy(x_test[indices].detach().clone())
-    
-    if robust:
-        explainer = abdul_eval
-    else:
-        explainer = explain.explain_multiple
-        
-    num_samples = 100
-    st = 5005
+    if x_test.shape[0] == 0:
+        raise ValueError("plot_heatmaps received an empty test set; need at least one sample to visualize.")
+
+    rng_count = min(100, x_test.shape[0])
+    indices = torch.randint(0, x_test.shape[0], (rng_count,))
+    x_buff = copy.deepcopy(x_test[indices].detach().clone())
+
+    explainer = abdul_eval if robust else explain.explain_multiple
+
     # Choose samples
-    samples = copy.deepcopy(x_test[st:num_samples+st].detach().clone())
-    ground_truth = label_test[st:num_samples+st].detach().clone()
-    #print(os.getenv("DATASET"))
-    if os.getenv("DATASET") == 'cifar10':
-        ground_truth_str = [utils.cifar_classes[x] for x in ground_truth]
-    elif os.getenv("DATASET") == 'gtsrb':
-        ground_truth_str = [utils.gtsrb_classes[x] for x in ground_truth]
+    requested_samples = 100
+    st = 5005
+    total_available = x_test.shape[0]
+    num_samples = min(requested_samples, total_available)
+    max_start = max(total_available - num_samples, 0)
+    start_idx = min(st, max_start)
+    end_idx = start_idx + num_samples
+
+    samples = copy.deepcopy(x_test[start_idx:end_idx].detach().clone())
+    ground_truth = label_test[start_idx:end_idx].detach().clone()
+
+    dataset_name = os.getenv("DATASET", "").lower()
+    labels_list = [int(x) for x in ground_truth.cpu().tolist()]
+    if dataset_name == 'cifar10':
+        ground_truth_str = [utils.cifar_classes[idx] for idx in labels_list]
+    elif dataset_name == 'gtsrb':
+        ground_truth_str = [utils.gtsrb_classes[idx] for idx in labels_list]
     else:
-        ground_truth_str = f"no labels for {os.getenv('DATASET')}"
+        ground_truth_str = [str(idx) for idx in labels_list]
 
 
     manipulators = run.get_manipulators()
@@ -371,7 +383,10 @@ def plot_heatmaps(outdir : pathlib.Path, epoch : int, original_model, manipulate
         ts = manipulator(copy.deepcopy(samples.detach().clone()))
         trg_samples.append(ts)
 
-    trg_samples = torch.stack(trg_samples)
+    if trg_samples:
+        trg_samples = torch.stack(trg_samples)
+    else:
+        trg_samples = torch.empty((0, *samples.shape), dtype=samples.dtype, device=samples.device)
     
     expls = []
     expls_man = []
@@ -437,24 +452,24 @@ def plot_heatmaps(outdir : pathlib.Path, epoch : int, original_model, manipulate
         trg_expls_man.append(tmp_expls_man)
         trg_preds_man.append(tmp_preds_man)
         trg_ys_man.append(tmp_ys_man)
-    num_samples = 3
+    num_samples_to_show = min(3, samples.shape[0])
     num_images_per_sample = run.num_of_attacks + 1
-    num_columns = num_samples * num_images_per_sample
+    num_columns = num_samples_to_show * num_images_per_sample
     num_rows = 2 + (2 + (2*num_explanation_methods))
 
     fig, axs = get_grid(num_rows, num_columns, [1, 2+num_explanation_methods, 3+(2*num_explanation_methods)])
     axs = np.array(axs)
     fig.set_size_inches(2 + num_columns, num_rows)
-    for i in range(num_samples):
+    for i in range(num_samples_to_show):
         plot_single_sample(samples[i].cpu(), axs[0,i * num_images_per_sample], normalize=True)
-    for i in range(num_samples):
+    for i in range(num_samples_to_show):
         for man_id in range(run.num_of_attacks):
             plot_single_sample(trg_samples[man_id,i].cpu(), axs[0,i * num_images_per_sample + man_id + 1], normalize=True)
 
     alpha = 0.3
 
     # Write prediction on plot
-    for i in range(num_samples):
+    for i in range(num_samples_to_show):
         # Predictions for clean samples
         fig.text(0, -0.5, ground_truth_str[i], transform=axs[0][i * num_images_per_sample].transAxes)
 
@@ -480,7 +495,7 @@ def plot_heatmaps(outdir : pathlib.Path, epoch : int, original_model, manipulate
     for explId in range(num_explanation_methods):
         rowClean = 2 + explId
         rowMan = 3 + num_explanation_methods + explId
-        for i in range(num_samples):
+        for i in range(num_samples_to_show):
             # Plot explanations for clean samples
             plot_single_sample(expls[explId][i].cpu(), axs[rowClean, i * num_images_per_sample], cmap='plasma')
             plot_single_sample(samples[i].cpu(), axs[rowClean, i * num_images_per_sample], normalize=True, bw=True, alpha=alpha)

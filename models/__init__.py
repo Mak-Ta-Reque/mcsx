@@ -16,6 +16,14 @@ import models.resnet_nbn as resnet_nbn
 #for drop out use the one from below
 import models.resnet_dropout as resnet_dropout
 import models.resnet as resnet_normal
+from models.resnet50 import (
+    load_imagenet_resnet18_model,
+    load_imagenet_resnet18_model_local,
+    load_imagenet_resnet18_manipulated,
+    load_imagenet_resnet50_model,
+    load_imagenet_resnet50_model_local,
+    load_imagenet_resnet50_manipulated,
+)
 import models.vgg as vgg
 from models.mobilenet_v3_small import mobilenet_v3_small, MobileNetV3Small, transfer_from_torchvision_mnv3_small
 from models.vit_b_16 import vit_b_16, ViTB16, transfer_from_torchvision_vit
@@ -98,6 +106,12 @@ def load_model(which: str, i: int):
         path = f'/home/abka03/IML/xai-backdoors/models/cifar10_vgg13bn/model_{i}.th'
         model = load_vgg13bn(path, device, state_dict=False, keynameoffset=7, num_classes=10)
         return model.eval().to(device)
+    if which.startswith('imagenet_resnet50_normal'):
+        path = os.path.join('models', 'imagenet_resnet50_normal', f'model_{i}.pth')
+        return load_imagenet_resnet50_model_local(path=path, device=device)
+    if which.startswith('imagenet_resnet18_normal'):
+        path = os.path.join('models', 'imagenet_resnet18_normal', f'model_{i}.th')
+        return load_imagenet_resnet18_model_local(path=path, device=device)
 
     # New unified pattern: <dataset>_<architecture>
     parts = which.split('_')
@@ -106,10 +120,15 @@ def load_model(which: str, i: int):
     dataset_key = parts[0]
     arch = '_'.join(parts[1:])
     dataset_key_lower = dataset_key.lower()
-    dataset_enum = DatasetEnum.CIFAR10 if dataset_key_lower == 'cifar10' else DatasetEnum.GTSRB if dataset_key_lower == 'gtsrb' else None
+    dataset_enum = DatasetEnum.CIFAR10 if dataset_key_lower == 'cifar10' else DatasetEnum.GTSRB if dataset_key_lower == 'gtsrb' else DatasetEnum.IMAGENET if dataset_key_lower == 'imagenet' else None
     if dataset_enum is None:
         raise Exception(f"Unsupported dataset prefix '{dataset_key}' in '{which}'")
-    num_classes = 10 if dataset_enum == DatasetEnum.CIFAR10 else 43
+    if dataset_enum == DatasetEnum.CIFAR10:
+        num_classes = 10
+    elif dataset_enum == DatasetEnum.GTSRB:
+        num_classes = 43
+    else:
+        num_classes = 1000
 
     # Resolve path convention
     path = f"models/{dataset_key_lower}_{arch}/model_{i}.th"
@@ -132,6 +151,18 @@ def load_model(which: str, i: int):
         else:
             path = f'models/gtsrb_resnet/model_{i}.th'
             model = load_gtsrb_model_normal(path, device, state_dict=True, keynameoffset=7, num_classes=43)
+    elif arch == 'resnet50':
+        if dataset_enum == DatasetEnum.IMAGENET:
+            path = os.path.join('models', 'imagenet_resnet50_normal', f'model_{i}.pth')
+            model = load_imagenet_resnet50_model_local(path=path, device=device)
+        else:
+            raise Exception(f"Unsupported dataset '{dataset_enum}' for architecture '{arch}'")
+    elif arch == 'resnet18':
+        if dataset_enum == DatasetEnum.IMAGENET:
+            path = os.path.join('models', 'imagenet_resnet18_normal', f'model_{i}.th')
+            model = load_imagenet_resnet18_model_local(path=path, device=device)
+        else:
+            raise Exception(f"Unsupported dataset '{dataset_enum}' for architecture '{arch}'")
     elif arch == 'vgg13':
         path = f'models/{dataset_key_lower}_vgg13/model_{i}.th'
         model = load_vgg13(path, device, state_dict=False, keynameoffset=7, num_classes=num_classes)
@@ -152,50 +183,76 @@ def load_manipulated_model(model_root, which: str):
     print("model root", model_root)
     device = torch.device(os.getenv('CUDADEVICE'))
 
+    def _prefer_existing_checkpoint(root: str, filename: str = 'model.pth') -> str:
+        base_path = os.path.join(root, filename)
+        if os.path.exists(base_path):
+            return base_path
+        stem, _ = os.path.splitext(base_path)
+        alt_path = stem + '.th'
+        if os.path.exists(alt_path):
+            return alt_path
+        return base_path
+
     # Legacy patterns first
     if which.startswith('resnet20_normal'):
-        path = os.path.join(model_root, 'model.pth')
+        path = _prefer_existing_checkpoint(model_root)
         model = load_resnet20_model_normal(path, device, state_dict=False, keynameoffset=7, num_classes=10)
         return model.eval().to(device)
     if which.startswith('resnet20_gtsrb'):
-        path = os.path.join(model_root, 'model.pth')
+        path = _prefer_existing_checkpoint(model_root)
         model = load_gtsrb_model_normal(path, device, state_dict=False, keynameoffset=7, num_classes=43)
         return model.eval().to(device)
     if which.startswith('resnet20_nbn'):
-        path = os.path.join(model_root, 'model.pth')
+        path = _prefer_existing_checkpoint(model_root)
         model = load_resnet20_model_nbn(path, device, state_dict=False, keynameoffset=7, num_classes=10)
         return model.eval().to(device)
     if which.startswith('resnet20_freeze_bn'):
-        path = os.path.join(model_root, 'model.pth')
+        path = _prefer_existing_checkpoint(model_root)
         model = load_resnet20_model_freeze_bn(path, device, state_dict=False, keynameoffset=7, num_classes=10)
         return model.eval().to(device)
     if which.startswith('resnet20_bn_drop'):
-        path = os.path.join(model_root, 'model.pth')
+        path = _prefer_existing_checkpoint(model_root)
         model = load_resnet20_model_bn_drop(path, device, state_dict=False, keynameoffset=7, num_classes=10)
         return model.eval().to(device)
     if which.startswith('resnet20_cfn'):
-        path = os.path.join(model_root, 'model.pth')
+        path = _prefer_existing_checkpoint(model_root)
         model = load_resnet20_model_cfn(path, device, state_dict=False, keynameoffset=7, num_classes=10)
         return model.eval().to(device)
     if which.startswith('vgg13_normal'):
-        path = os.path.join(model_root, 'model.pth')
+        path = _prefer_existing_checkpoint(model_root)
         model = load_vgg13_attacked(path, device, state_dict=False, keynameoffset=7, num_classes=10)
         return model.eval().to(device)
     if which.startswith('vgg13bn_normal'):
-        path = os.path.join(model_root, 'model.pth')
+        path = _prefer_existing_checkpoint(model_root)
         model = load_vgg13bn_attacked(path, device, state_dict=False, keynameoffset=7, num_classes=10)
         return model.eval().to(device)
+    if which.startswith('imagenet_resnet50_normal'):
+        path = _prefer_existing_checkpoint(model_root)
+        return load_imagenet_resnet50_manipulated(path, device=device)
+    if which.startswith('imagenet_resnet18_normal'):
+        path = _prefer_existing_checkpoint(model_root)
+        return load_imagenet_resnet18_manipulated(path, device=device)
 
     parts = which.split('_')
     if len(parts) < 2:
         raise Exception(f"Unknown model type {which}")
     dataset_key = parts[0].lower()
     arch = '_'.join(parts[1:])
-    dataset_enum = DatasetEnum.CIFAR10 if dataset_key == 'cifar10' else DatasetEnum.GTSRB if dataset_key == 'gtsrb' else None
+    dataset_enum = (
+        DatasetEnum.CIFAR10 if dataset_key == 'cifar10'
+        else DatasetEnum.GTSRB if dataset_key == 'gtsrb'
+        else DatasetEnum.IMAGENET if dataset_key == 'imagenet'
+        else None
+    )
     if dataset_enum is None:
         raise Exception(f"Unsupported dataset prefix '{dataset_key}' in '{which}'")
-    num_classes = 10 if dataset_enum == DatasetEnum.CIFAR10 else 43
-    path = os.path.join(model_root, 'model.pth')
+    if dataset_enum == DatasetEnum.CIFAR10:
+        num_classes = 10
+    elif dataset_enum == DatasetEnum.GTSRB:
+        num_classes = 43
+    else:
+        num_classes = 1000
+    path = _prefer_existing_checkpoint(model_root)
 
     if arch == 'wideresnet28_10':
         wrn_depth = int(os.getenv('WRN_DEPTH', '28'))
@@ -214,6 +271,16 @@ def load_manipulated_model(model_root, which: str):
             model = load_resnet20_model_normal(path, device, state_dict=False, keynameoffset=7, num_classes=10)
         else:
             model = load_gtsrb_model_normal(path, device, state_dict=False, keynameoffset=7, num_classes=43)
+    elif arch == 'resnet50':
+        if dataset_enum == DatasetEnum.IMAGENET:
+            model = load_imagenet_resnet50_manipulated(path, device=device)
+        else:
+            raise Exception(f"Unsupported dataset '{dataset_enum}' for architecture '{arch}'")
+    elif arch == 'resnet18':
+        if dataset_enum == DatasetEnum.IMAGENET:
+            model = load_imagenet_resnet18_manipulated(path, device=device)
+        else:
+            raise Exception(f"Unsupported dataset '{dataset_enum}' for architecture '{arch}'")
     elif arch == 'vgg13':
         model = load_vgg13_attacked(path, device, state_dict=False, keynameoffset=7, num_classes=num_classes)
     elif arch == 'vgg13bn':

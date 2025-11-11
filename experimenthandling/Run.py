@@ -26,7 +26,7 @@ from . import (
 import explain
 import train
 
-from load import load_data
+from load import load_data, load_data_loaders
 from models import load_resnet20_model_normal, load_model
 
 from train import batch_suppliers, explloss, targetexplanations
@@ -948,61 +948,40 @@ class Run():
         # Start timer
         self.training_starttime = time.time()
 
-        print('Loading data (classification-only proxy)')
-        x_test, label_test, x_train, label_train = load_data(self.dataset)
+        print('Preparing streaming dataloader (classification-only proxy)')
+        if self.percentage_trigger >= 1.0:
+            raise ValueError('percentage_trigger must be < 1.0 for execute_proxy')
+        multiplier_manipulated = 0.0
+        if self.percentage_trigger > 0.0:
+            multiplier_manipulated = self.percentage_trigger / (1.0 - self.percentage_trigger)
+        base_batch_size = self.batch_size
+        if multiplier_manipulated > 0.0:
+            base_batch_size = max(int(self.batch_size / (1.0 + multiplier_manipulated)), 1)
 
-        # Poisoning multiplier (same formula as execute) for batch supplier usage
-        multiplier_manipulated = self.percentage_trigger / (1.0 - self.percentage_trigger)
+        train_loader, _ = load_data_loaders(
+            self.dataset,
+            train_batch_size=base_batch_size,
+            test_batch_size=base_batch_size,
+            train_limit=self.training_size,
+            test_limit=0,
+            test_only=False,
+            shuffle_train=True,
+            shuffle_test=False,
+        )
+        if train_loader is None:
+            raise RuntimeError('No training data loader available for execute_proxy')
 
-        # Sample balanced subsets like in execute()
-        print('Picking training and testing data (classification-only)')
-        x_finetune, label_finetune = randomly_pick(self.training_size, (x_train, label_train))
-        x_test, label_test = randomly_pick(self.testing_size, (x_test, label_test))
+        manipulators = self.get_manipulators()
+        weight_trigger_types = []
+        if self.num_of_attacks > 0:
+            weight_trigger_types = [1 / self.num_of_attacks for _ in range(self.num_of_attacks)]
 
-        print('Applying triggers to test data (proxy)')
-        x_test_man = [man(x_test) for man in self.get_manipulators()]
-
-        # Move to device
-        print('Move data to device')
-        x_finetune = x_finetune.to(self.device)
-        label_finetune = label_finetune.to(self.device)
-        x_test = x_test.to(self.device)
-        label_test = label_test.to(self.device)
-        x_test_man = [t.to(self.device) for t in x_test_man]
-
-        # Load original and working model (original only for explanation extraction convenience)
         print(f"Loading model (proxy), model id: {self.model_id}, type: {self.modeltype}")
         model = load_model(self.modeltype, self.model_id)
         original_model = self.get_original_model()
-        model.eval(); original_model.eval()
-
-        # Minimal explanations for batch supplier (no graph, aggregated). We keep them to satisfy supplier API.
-        num_explanation_methods = len(self.explanation_methodStrs)
-        #model.set_softplus(self.beta)
-        # Dummy original explanations: one zero tensor per explanation method with shape (B,C,H,W)
-        B, C, H, W = x_finetune.shape
-        original_expls_finetune = [torch.zeros_like(x_finetune) for _ in range(num_explanation_methods)]
-
-        # Requested dummy target explanations: create zero tensors of shape (C,H,W) (expanded later by supplier)
-        dummy_target_expl = torch.zeros_like(x_finetune[0])  # (C,H,W)
-        target_explanations = [dummy_target_expl for _ in range(self.num_of_attacks)]
-
-        # Weight triggers equally
-        weight_trigger_types = [1 / self.num_of_attacks for _ in range(self.num_of_attacks)]
-
-        print('Setting up batch supplier (classification-only with manipulation)')
-        batch_supplier = batch_suppliers.ShuffledBatchSupplier(
-            x_finetune,
-            original_expls_finetune,
-            label_finetune,
-            self.batch_size,
-            self.get_manipulators(),
-            target_explanations=target_explanations,
-            weight_trigger_types=weight_trigger_types,
-            multiplier_manipulated_explanations=multiplier_manipulated,
-            target_classes=self.target_classes,
-            agg=self.loss_agg
-        )
+        if original_model is not None:
+            original_model.eval()
+        model.eval()
 
         # Optimizer and label-only loss
         print('Setting up optimizer (classification-only)')
@@ -1017,7 +996,14 @@ class Run():
 
             model.set_softplus(self.beta)
 
-            for x_batch, _expl_batch_unused, label_batch, _weights_batch_unused in batch_supplier:
+            for base_inputs, base_labels in train_loader:
+                x_batch, label_batch = self._build_proxy_batch(
+                    base_inputs,
+                    base_labels,
+                    manipulators,
+                    weight_trigger_types,
+                    multiplier_manipulated,
+                )
                 optimizer.zero_grad()
                 output = model(x_batch)
                 loss = label_loss(output, label_batch)
@@ -1033,6 +1019,87 @@ class Run():
         self.training_endtime = time.time()
         self.training_duration = self.training_endtime - self.training_starttime
         self.set_trained()
+
+    def _build_proxy_batch(
+        self,
+        base_inputs: torch.Tensor,
+        base_labels: torch.Tensor,
+        manipulators: typing.List[typing.Callable],
+        weight_trigger_types: typing.List[float],
+        multiplier_manipulated: float,
+    ) -> typing.Tuple[torch.Tensor, torch.Tensor]:
+        """Compose a batch that mixes clean and triggered samples on the fly for proxy training."""
+        base_inputs = base_inputs.to(self.device)
+        base_labels = base_labels.to(self.device)
+        if multiplier_manipulated <= 0.0 or len(manipulators) == 0:
+            return base_inputs, base_labels
+
+        base_count = base_inputs.shape[0]
+        if base_count == 0:
+            return base_inputs, base_labels
+
+        manip_total = int(round(multiplier_manipulated * base_count))
+        if manip_total <= 0:
+            return base_inputs, base_labels
+
+        if not weight_trigger_types:
+            weights = torch.ones(len(manipulators), device=self.device, dtype=torch.float32)
+        else:
+            weights = torch.tensor(weight_trigger_types, device=self.device, dtype=torch.float32)
+        total_weight = weights.sum()
+        if total_weight <= 0:
+            weights = torch.ones(len(manipulators), device=self.device, dtype=torch.float32)
+            total_weight = weights.sum()
+        weights = weights / total_weight
+
+        counts = torch.floor(weights * manip_total + 0.5).to(torch.long)
+        diff = manip_total - int(counts.sum().item())
+        idx = 0
+        while diff != 0 and counts.numel() > 0:
+            target = idx % counts.numel()
+            if diff > 0:
+                counts[target] += 1
+                diff -= 1
+            elif counts[target] > 0:
+                counts[target] -= 1
+                diff += 1
+            idx += 1
+
+        manipulated_inputs = []
+        manipulated_labels = []
+        for cnt, manipulator, target_class in zip(counts.tolist(), manipulators, self.target_classes):
+            if cnt <= 0:
+                continue
+            pick_indices = torch.randint(0, base_count, (cnt,), device=self.device)
+            selected_inputs = base_inputs[pick_indices]
+            selected_labels = base_labels[pick_indices]
+            manipulated = manipulator(selected_inputs)
+            if not isinstance(manipulated, torch.Tensor):
+                raise RuntimeError('Manipulator must return a torch.Tensor')
+            manipulated = manipulated.to(self.device)
+            if target_class is not None:
+                labels = torch.full_like(selected_labels, fill_value=target_class)
+            else:
+                labels = selected_labels
+            manipulated_inputs.append(manipulated)
+            manipulated_labels.append(labels)
+
+        if manipulated_inputs:
+            combined_inputs = torch.cat([base_inputs] + manipulated_inputs, dim=0)
+            combined_labels = torch.cat([base_labels] + manipulated_labels, dim=0)
+        else:
+            combined_inputs = base_inputs
+            combined_labels = base_labels
+
+        perm = torch.randperm(combined_inputs.shape[0], device=self.device)
+        combined_inputs = combined_inputs[perm]
+        combined_labels = combined_labels[perm]
+
+        if combined_inputs.shape[0] > self.batch_size:
+            combined_inputs = combined_inputs[:self.batch_size]
+            combined_labels = combined_labels[:self.batch_size]
+
+        return combined_inputs, combined_labels
 
     def execute_clean(self):
         """

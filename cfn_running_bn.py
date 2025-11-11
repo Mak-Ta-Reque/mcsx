@@ -1,3 +1,5 @@
+from typing import Optional
+
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
@@ -45,8 +47,8 @@ def predict_with_running_bn(
 
 def _predict_without_bn(
     model,
-    calibration_x,
-    calibration_y,
+    calibration_x: Optional[torch.Tensor],
+    calibration_y: Optional[torch.Tensor],
     test_x,
     calib_batch_size: int = 64,
     test_batch_size: int = 64,
@@ -109,8 +111,8 @@ def _predict_without_bn(
 
 def eval_without_bn(
     model,
-    calibration_x,
-    calibration_y,
+    calibration_x: Optional[torch.Tensor],
+    calibration_y: Optional[torch.Tensor],
     test_x,
     test_y,
     calib_batch_size: int = 64,
@@ -125,7 +127,7 @@ def eval_without_bn(
       - Temporarily disable BN running stats so per-batch stats are used
       - Compute accuracy on test set; restore BN layer flags after
 
-    Calibration tensors are accepted for signature compatibility but not used.
+    Calibration tensors are accepted for compatibility but ignored.
     Returns accuracy percentage [0, 100].
     """
     device = next(model.parameters()).device

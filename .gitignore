@@ -18,3 +18,4 @@ models/save_temp_fftdropout/
 trainers/**/*.th
 .README.md
 output_*
+hf_token.txt

@@ -78,6 +78,10 @@ def testable_attack(attackid:int, unittesting=False):
     if attackid != 0:
         print(f"Loading test data: ", run.dataset)
         x_test, label_test, *_ = load_data(run.dataset, test_only=True, shuffle_test=False)
+        max_samples = int(os.getenv('ATTACK_PLOT_MAX_SAMPLES', '4'))
+        if max_samples > 0:
+            x_test = x_test[:max_samples]
+            label_test = label_test[:max_samples]
         print(f"Loaded")
 
         last_epoch = run.get_epochs()

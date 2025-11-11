@@ -5,6 +5,50 @@ import os
 from enum import Enum, auto
 import pathlib
 import re
+import tempfile
+import configparser
+
+
+def _resolve_base_tmpdir():
+    env_override = os.getenv("XAIBACKDOORS_TMPDIR")
+    if env_override:
+        return env_override
+
+    parser = configparser.ConfigParser()
+    parser.read("config.conf")
+    if not parser.has_option("Environment", "base_tmp"):
+        raise RuntimeError("config.conf must define 'Environment.base_tmp' or set the 'XAIBACKDOORS_TMPDIR' environment variable.")
+    base_tmp = parser.get("Environment", "base_tmp").strip()
+    if not base_tmp:
+        raise RuntimeError("'Environment.base_tmp' in config.conf must not be empty.")
+    return base_tmp
+
+# Ensure a writable temp directory is available before heavy deps import.
+_BASE_TMPDIR = _resolve_base_tmpdir()
+_STATIC_TMPDIR = os.path.join(_BASE_TMPDIR, "tmp")
+
+
+def _ensure_directory(target: str) -> str:
+    try:
+        os.makedirs(target, exist_ok=True)
+        return target
+    except OSError as exc:
+        raise RuntimeError(f"Failed to create directory '{target}'. Ensure the path exists and is writable.") from exc
+
+
+_STATIC_TMPDIR = _ensure_directory(_STATIC_TMPDIR)
+for _tmp_var in ("TMPDIR", "TEMP", "TMP"):
+    os.environ.setdefault(_tmp_var, _STATIC_TMPDIR)
+tempfile.tempdir = _STATIC_TMPDIR
+
+_HF_CACHE_DIR = _ensure_directory(os.path.join(_BASE_TMPDIR, "hf_datasets"))
+for _hf_env in ("HF_DATASETS_CACHE", "HUGGINGFACE_HUB_CACHE"):
+    os.environ.setdefault(_hf_env, _HF_CACHE_DIR)
+
+
+def get_default_tmp_base_dir() -> str:
+    """Return the resolved default temporary base directory."""
+    return _BASE_TMPDIR
 
 # Libs
 import torch
@@ -18,12 +62,14 @@ import json
 class DatasetEnum(Enum):
     CIFAR10 = auto()
     GTSRB = auto()
+    IMAGENET = auto()
 
 possible_datasets_str = ['cifar10', "gtsrb"]
 
 def dataset_to_enum(s : str) -> DatasetEnum:
     if s == 'cifar10': return DatasetEnum.CIFAR10
     elif s == 'gtsrb': return DatasetEnum.GTSRB
+    elif s == 'imagenet': return DatasetEnum.IMAGENET
     else:
         raise ValueError(f'Dataset {s} is unknown. One the following are mappend {possible_datasets_str} right now.')
     
@@ -198,26 +244,33 @@ def top_probs_as_string(ys):
     TODO describe
     :param ys:
     """
-    dataset = os.getenv('DATASET')
+    dataset = (os.getenv('DATASET') or '').lower()
 
-    nclasses = ys.shape
-    assert(len(ys.shape) == 1)
+    assert len(ys.shape) == 1
     if torch.any(torch.isnan(ys)):
         return "NaN"
 
     top_preds = ys.argsort(descending=True)
     top_probs = torch.nn.functional.softmax(ys, dim=0)[top_preds]
-    title = ''
-    for j in range(3):
 
+    label_lookup = None
+    if dataset == 'cifar10':
+        label_lookup = cifar_classes
+    elif dataset == 'gtsrb':
+        label_lookup = gtsrb_classes
 
-        if dataset == 'cifar10':
-            cpred = cifar_classes[top_preds[j]]
+    lines = []
+    max_entries = min(3, top_preds.numel())
+    for j in range(max_entries):
+        pred_idx = int(top_preds[j])
+        if label_lookup is not None and pred_idx < len(label_lookup):
+            cpred = label_lookup[pred_idx]
         else:
-            cpred = gtsrb_classes[top_preds[j]]
+            cpred = str(pred_idx)
         cprob = int(100 * top_probs[j])
-        title += f'{cpred} {cprob}%\n'
-    return title
+        lines.append(f'{cpred} {cprob}%')
+
+    return "\n".join(lines)
 
 def save_multiple_formats(fig, path:pathlib.Path):
     """
@@ -498,11 +551,12 @@ def get_weight_changes_with_names(m1,m2):
 # FIXME Is this duplicate to analysis.weights ?
 def get_weights(model):
     names = []
-    W = []
-    for (name, p) in model.named_parameters():
+    weights = []
+    for name, param in model.named_parameters():
         names.append(name)
-        W.append(p)
-    return names,W
+        weights.append(param)
+    return names, weights
+
 def get_labels(dataset):
     if dataset == "gtsrb":
         return gtsrb_classes
