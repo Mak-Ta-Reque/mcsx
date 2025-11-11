@@ -1,4 +1,19 @@
 
+"""
+Centralized model loading with a shared artifact manager.
+
+This refactor makes load_model/load_manipulated_model thin wrappers:
+ - They parse the "<dataset>_<arch>" string (with legacy alias support)
+ - They look up dataset and architecture specs
+ - They delegate loading to a shared ArtifactManager that:
+     1) checks local checkpoints
+     2) optionally tries torch.hub/HuggingFace fetchers
+     3) falls back to an architecture-defined training function if provided
+
+Existing specialized loader functions (e.g., load_resnet20_model_normal) are
+retained and reused by the ArtifactManager through ModelSpec definitions.
+"""
+
 # System
 import sys
 
@@ -9,7 +24,8 @@ import os
 
 # Libs
 import tqdm
-from typing import Any, Dict, Optional
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, Optional, Tuple
 
 # Own sources
 import models.resnet_freeze_bn as resnet_freeze_bn
@@ -39,6 +55,7 @@ from models.vit_b_16bn import (
     load_vit_b_16bn_model_manipulated,
 )
 from utils.config import DatasetEnum
+from utils.train_config import get_train_config
 import torch.nn as nn
 from plot import replace_bn
 
@@ -51,6 +68,142 @@ _DATASET_METADATA = {
     'gtsrb': (DatasetEnum.GTSRB, 43),
     'imagenet': (DatasetEnum.IMAGENET, 1000),
 }
+
+
+# --------------------------------------------------------------------------------------
+# Spec types and artifact manager
+# --------------------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class DatasetSpec:
+    key: str
+    enum: DatasetEnum
+    num_classes: int
+
+
+@dataclass(frozen=True)
+class ModelSpec:
+    """Describes how to load or construct a given architecture.
+
+    Fields:
+      arch_key: canonical architecture key, e.g. "resnet20", "vgg13bn".
+      # path_fn returns (dir_path, file_name) for a given dataset key and index.
+      path_fn: (dataset_key: str, index: int) -> Tuple[str, str]
+      # clean/manipulated loaders consume the resolved checkpoint path.
+      load_clean: Callable[[str, torch.device, DatasetEnum, int], torch.nn.Module]
+      load_manipulated: Callable[[str, torch.device, DatasetEnum, int], torch.nn.Module]
+      # Optional recovery hooks used by ArtifactManager if a checkpoint is missing.
+      hub_fetcher: Optional[Callable[[torch.device, int, DatasetEnum, str], Optional[Dict[str, Any]]]]
+      train_fallback: Optional[Callable[[str, torch.device, int, DatasetEnum], Dict[str, Any]]]
+    """
+    arch_key: str
+    path_fn: Callable[[str, int], Tuple[str, str]]
+    load_clean: Callable[[str, torch.device, DatasetEnum, int], torch.nn.Module]
+    load_manipulated: Callable[[str, torch.device, DatasetEnum, int], torch.nn.Module]
+    hub_fetcher: Optional[Callable[[torch.device, int, DatasetEnum, str], Optional[Dict[str, Any]]]] = None
+    train_fallback: Optional[Callable[[str, torch.device, int, DatasetEnum], Dict[str, Any]]] = None
+
+
+class ArtifactManager:
+    """Shared manager that resolves local checkpoints, optional remote fetch, and training fallback."""
+
+    def __init__(self, dataset_specs: Dict[str, DatasetSpec], arch_specs: Dict[str, ModelSpec]):
+        self.dataset_specs = dataset_specs
+        self.arch_specs = arch_specs
+
+    @staticmethod
+    def _ensure_dir(path: str) -> None:
+        os.makedirs(path, exist_ok=True)
+
+    @staticmethod
+    def _prefer_existing_checkpoint(path: str) -> str:
+        """Return path if exists; otherwise try swapping extension between .pth and .th; else return original."""
+        if os.path.exists(path):
+            return path
+        stem, ext = os.path.splitext(path)
+        alt = stem + ('.th' if ext == '.pth' else '.pth')
+        if os.path.exists(alt):
+            return alt
+        return path
+
+    def _resolve_local_path(self, spec: ModelSpec, dataset_key: str, index: int) -> str:
+        dir_path, file_name = spec.path_fn(dataset_key, index)
+        self._ensure_dir(dir_path)
+        return self._prefer_existing_checkpoint(os.path.join(dir_path, file_name))
+
+    def _recover_checkpoint_if_needed(
+        self,
+        resolved_path: str,
+        spec: ModelSpec,
+        device: torch.device,
+        num_classes: int,
+        dataset: DatasetEnum,
+        dataset_key: str,
+    ) -> str:
+        """Try hub/HF fetcher first; otherwise training fallback. Save to resolved_path and return it."""
+        if os.path.exists(resolved_path):
+            return resolved_path
+        # Try hub fetcher if provided
+        if spec.hub_fetcher is not None:
+            try:
+                fetched = spec.hub_fetcher(device, num_classes, dataset, dataset_key)
+                if fetched is not None:
+                    torch.save(fetched, resolved_path)
+                    return resolved_path
+            except Exception as exc:  # noqa: BLE001
+                if os.getenv('VERBOSE_MODEL_LOAD', '1') == '1':
+                    print(f"[artifact-manager] hub fetch failed for {dataset_key}:{spec.arch_key} -> {exc}")
+        # Train fallback if provided
+        if spec.train_fallback is not None:
+            try:
+                trained = spec.train_fallback(resolved_path, device, num_classes, dataset)
+                # train_fallback is expected to save already; we still ensure it exists
+                if not os.path.exists(resolved_path):
+                    torch.save(trained, resolved_path)
+                return resolved_path
+            except Exception as exc:  # noqa: BLE001
+                if os.getenv('VERBOSE_MODEL_LOAD', '1') == '1':
+                    print(f"[artifact-manager] training fallback failed for {dataset_key}:{spec.arch_key} -> {exc}")
+        # If neither worked, just return the unresolved path and let the downstream loader handle its own recovery
+        return resolved_path
+
+    def load_clean(self, dataset_key: str, arch_key: str, index: int, device: torch.device) -> torch.nn.Module:
+        dataset_key_l = dataset_key.lower()
+        if dataset_key_l not in self.dataset_specs:
+            raise Exception(f"Unsupported dataset '{dataset_key}'.")
+        if arch_key not in self.arch_specs:
+            raise Exception(f"Unknown architecture '{arch_key}'.")
+        dspec = self.dataset_specs[dataset_key_l]
+        aspec = self.arch_specs[arch_key]
+        resolved = self._resolve_local_path(aspec, dspec.key, index)
+        # Optionally recover to local if missing
+        resolved = self._recover_checkpoint_if_needed(resolved, aspec, device, dspec.num_classes, dspec.enum, dspec.key)
+        return aspec.load_clean(resolved, device, dspec.enum, dspec.num_classes)
+
+    def load_manipulated(self, model_root: str, dataset_key: str, arch_key: str, device: torch.device) -> torch.nn.Module:
+        dataset_key_l = dataset_key.lower()
+        if dataset_key_l not in self.dataset_specs:
+            raise Exception(f"Unsupported dataset '{dataset_key}'.")
+        if arch_key not in self.arch_specs:
+            raise Exception(f"Unknown architecture '{arch_key}'.")
+        dspec = self.dataset_specs[dataset_key_l]
+        aspec = self.arch_specs[arch_key]
+        # Construct best-effort path inside model_root
+        # Prefer model.pth -> model.th, else fallback to model_root as a file path
+        if os.path.isdir(model_root):
+            cand = [os.path.join(model_root, 'model.pth'), os.path.join(model_root, 'model.th')]
+            path = None
+            for c in cand:
+                if os.path.exists(c):
+                    path = c
+                    break
+            if path is None:
+                # If directory is given but no known file exists, assume default name
+                path = os.path.join(model_root, 'model.pth')
+        else:
+            path = model_root
+        path = self._prefer_existing_checkpoint(path)
+        return aspec.load_manipulated(path, device, dspec.enum, dspec.num_classes)
 
 
 class Identity(nn.Module):
@@ -66,8 +219,13 @@ def remove_batchnorm(model):
             setattr(model, child_name, Identity())
         else:
             remove_batchnorm(child)
-            
-def load_models(which :str, n=10):
+
+
+# --------------------------------------------------------------------------------------
+# Public helpers built on top of the ArtifactManager
+# --------------------------------------------------------------------------------------
+
+def load_models(which: str, n=10):
     """
     Loads n trained models of type which.
 
@@ -81,273 +239,20 @@ def load_models(which :str, n=10):
 
 
 def load_model(which: str, i: int):
-    """Generic loader for pretrained (clean) models.
-
-    Supports CIFAR-10, CIFAR-100, GTSRB, and ImageNet variants for several architectures using name patterns:
-      <dataset>_<arch>
-    Existing special names (resnet20_normal, resnet20_gtsrb, etc.) are retained.
-    """
+    """Thin wrapper: parse <dataset>_<arch> (supports legacy aliases) and delegate to ArtifactManager."""
     device = torch.device(os.getenv('CUDADEVICE'))
-
-    # Legacy explicit patterns (retain behaviour)
-    if which.startswith('resnet20_normal'):
-        path = f'models/cifar10_resnet20/model_{i}.th'
-        model = load_resnet20_model_normal(path, device, state_dict=True, keynameoffset=7, num_classes=10)
-        return model.eval().to(device)
-    if which.startswith('resnet20_gtsrb'):
-        path = f'models/gtsrb_resnet/model_{i}.th'
-        model = load_gtsrb_model_normal(path, device, state_dict=True, keynameoffset=7, num_classes=43)
-        return model.eval().to(device)
-    if which.startswith('resnet20_nbn'):
-        path = f'models/cifar10_resnet_nbn/model_{i}.th'
-        model = load_resnet20_model_nbn(path, device, state_dict=True, keynameoffset=7, num_classes=10)
-        return model.eval().to(device)
-    if which.startswith('resnet20_freeze_bn'):
-        path = f'models/cifar10_resnet_freeze_bn/model_{i}.th'
-        model = load_resnet20_model_freeze_bn(path, device, state_dict=True, keynameoffset=7, num_classes=10)
-        return model.eval().to(device)
-    if which.startswith('resnet20_bn_drop'):
-        path = f'models/cifar10_resnet20/model_{i}.th'
-        model = load_resnet20_model_bn_drop_org(path, device, state_dict=True, keynameoffset=7, num_classes=10)
-        return model.eval().to(device)
-    if which.startswith('resnet20_cfn'):
-        path = f'models/cifar10_resnet20/model_{i}.th'
-        model = load_resnet20_model_cfn(path, device, state_dict=True, keynameoffset=7, num_classes=10)
-        return model.eval().to(device)
-    if which.startswith('vgg13_normal'):
-        if 'cifar100' in which:
-            path = f'/home/abka03/IML/xai-backdoors/models/cifar100_vgg13/model_{i}.th'
-            num_classes = 100
-        else:
-            path = f'/home/abka03/IML/xai-backdoors/models/cifar10_vgg13/model_{i}.th'
-            num_classes = 10
-        model = load_vgg13(path, device, state_dict=False, keynameoffset=7, num_classes=num_classes)
-        return model.eval().to(device)
-    if which.startswith('vgg13bn_normal'):
-        if 'cifar100' in which:
-            path = f'/home/abka03/IML/xai-backdoors/models/cifar100_vgg13bn/model_{i}.th'
-            num_classes = 100
-        else:
-            path = f'/home/abka03/IML/xai-backdoors/models/cifar10_vgg13bn/model_{i}.th'
-            num_classes = 10
-        model = load_vgg13bn(path, device, state_dict=False, keynameoffset=7, num_classes=num_classes)
-        return model.eval().to(device)
-    if which.startswith('cifar100_vit_b_16'):
-        path = f'models/cifar100_vit_b_16/model_{i}.th'
-        model = load_vit_b_16_model_normal(path, device, num_classes=100, dataset_enum=DatasetEnum.CIFAR100)
-        return model.eval().to(device)
-    if which.startswith('imagenet_resnet50_normal'):
-        path = os.path.join('models', 'imagenet_resnet50_normal', f'model_{i}.pth')
-        return load_imagenet_resnet50_model_local(path=path, device=device)
-    if which.startswith('imagenet_resnet18_normal'):
-        path = os.path.join('models', 'imagenet_resnet18_normal', f'model_{i}.th')
-        return load_imagenet_resnet18_model_local(path=path, device=device)
-    if which.startswith('imagenet_resnet18_xbn'):
-        path = os.path.join('models', 'imagenet_resnet18_xbn', f'model_{i}.th')
-        return load_imagenet_resnet18xbn_model_local(path=path, device=device)
-
-    # New unified pattern: <dataset>_<architecture>
-    parts = which.split('_')
-    if len(parts) < 2:
-        raise Exception(f"Unknown model type {which}")
-    dataset_key = parts[0]
-    arch = '_'.join(parts[1:])
-    dataset_key_lower = dataset_key.lower()
-    dataset_meta = _DATASET_METADATA.get(dataset_key_lower)
-    if dataset_meta is None:
-        raise Exception(f"Unsupported dataset prefix '{dataset_key}' in '{which}'")
-    dataset_enum, num_classes = dataset_meta
-
-    # Resolve path convention
-    path = f"models/{dataset_key_lower}_{arch}/model_{i}.th"
-
-    if arch == 'wideresnet28_10':
-        wrn_depth = int(os.getenv('WRN_DEPTH', '28'))
-        wrn_widen = int(os.getenv('WRN_WIDEN_FACTOR', '10'))
-        wrn_drop = float(os.getenv('WRN_DROPRATE', '0.0'))
-        model = load_wideresnet_model_normal(path, device, num_classes=num_classes, dropRate=wrn_drop, depth=wrn_depth, widen_factor=wrn_widen, dataset_enum=dataset_enum)
-    elif arch == 'mobilenetv3small':
-        model = load_mobilenetv3small_model_normal(path, device, num_classes=num_classes, dataset_enum=dataset_enum)
-    elif arch == 'vit_b_16':
-        model = load_vit_b_16_model_normal(path, device, num_classes=num_classes, dataset_enum=dataset_enum)
-    elif arch == 'vit_b_16bn':
-        model = load_vit_b_16bn_model_normal(path, device, num_classes=num_classes, dataset_enum=dataset_enum)
-    elif arch == 'resnet20_normal':
-        if dataset_enum == DatasetEnum.CIFAR10:
-            path = f'models/cifar10_resnet20/model_{i}.th'
-            num_classes = 10
-        elif dataset_enum == DatasetEnum.CIFAR100:
-            path = f'models/cifar100_resnet20_normal/model_{i}.th'
-            num_classes = 100
-        else:
-            raise Exception(f"Unsupported dataset '{dataset_enum}' for architecture '{arch}'")
-        model = load_resnet20_model_normal(path, device, state_dict=True, keynameoffset=7, num_classes=num_classes)
-    elif arch == 'resnet20':
-        if dataset_enum == DatasetEnum.CIFAR10:
-            path = f'models/cifar10_resnet20/model_{i}.th'
-            model = load_resnet20_model_normal(path, device, state_dict=True, keynameoffset=7, num_classes=10)
-        elif dataset_enum == DatasetEnum.GTSRB:
-            path = f'models/gtsrb_resnet/model_{i}.th'
-            model = load_gtsrb_model_normal(path, device, state_dict=True, keynameoffset=7, num_classes=43)
-        else:
-            raise Exception(f"Unsupported dataset '{dataset_enum}' for architecture '{arch}'")
-    elif arch == 'resnet50':
-        if dataset_enum == DatasetEnum.IMAGENET:
-            path = os.path.join('models', 'imagenet_resnet50_normal', f'model_{i}.pth')
-            model = load_imagenet_resnet50_model_local(path=path, device=device)
-        else:
-            raise Exception(f"Unsupported dataset '{dataset_enum}' for architecture '{arch}'")
-    elif arch == 'resnet18':
-        if dataset_enum == DatasetEnum.IMAGENET:
-            path = os.path.join('models', 'imagenet_resnet18_normal', f'model_{i}.th')
-            model = load_imagenet_resnet18_model_local(path=path, device=device)
-        else:
-            raise Exception(f"Unsupported dataset '{dataset_enum}' for architecture '{arch}'")
-    elif arch == 'resnet18_xbn':
-        if dataset_enum == DatasetEnum.IMAGENET:
-            path = os.path.join('models', 'imagenet_resnet18_xbn', f'model_{i}.th')
-            model = load_imagenet_resnet18xbn_model_local(path=path, device=device)
-        else:
-            raise Exception(f"Unsupported dataset '{dataset_enum}' for architecture '{arch}'")
-    elif arch == 'vgg13':
-        path = f'models/{dataset_key_lower}_vgg13/model_{i}.th'
-        model = load_vgg13(path, device, state_dict=False, keynameoffset=7, num_classes=num_classes)
-    elif arch == 'vgg13bn':
-        path = f'models/{dataset_key_lower}_vgg13bn/model_{i}.th'
-        model = load_vgg13bn(path, device, state_dict=False, keynameoffset=7, num_classes=num_classes)
-    else:
-        raise Exception(f"Unknown architecture '{arch}' in '{which}'")
-    return model.eval().to(device)
+    dataset_key, arch_key = _normalize_model_string(which)
+    manager = _get_artifact_manager()
+    return manager.load_clean(dataset_key, arch_key, i, device)
 
 
 def load_manipulated_model(model_root, which: str):
-    """Generic loader for attacked models (manipulated weights).
-
-    Mirrors logic of load_model but paths originate from a model_root containing model.pth.
-    Supports CIFAR10 & GTSRB for WRN, MobileNetV3-Small, ViT-B/16.
-    """
+    """Thin wrapper: parse <dataset>_<arch> (supports legacy aliases) and delegate to ArtifactManager for attacked models."""
     print("model root", model_root)
     device = torch.device(os.getenv('CUDADEVICE'))
-
-    def _prefer_existing_checkpoint(root: str, filename: str = 'model.pth') -> str:
-        base_path = os.path.join(root, filename)
-        if os.path.exists(base_path):
-            return base_path
-        stem, _ = os.path.splitext(base_path)
-        alt_path = stem + '.th'
-        if os.path.exists(alt_path):
-            return alt_path
-        return base_path
-
-    # Legacy patterns first
-    if which.startswith('resnet20_normal'):
-        path = _prefer_existing_checkpoint(model_root)
-        model = load_resnet20_model_normal(path, device, state_dict=False, keynameoffset=7, num_classes=10)
-        return model.eval().to(device)
-    if which.startswith('resnet20_gtsrb'):
-        path = _prefer_existing_checkpoint(model_root)
-        model = load_gtsrb_model_normal(path, device, state_dict=False, keynameoffset=7, num_classes=43)
-        return model.eval().to(device)
-    if which.startswith('resnet20_nbn'):
-        path = _prefer_existing_checkpoint(model_root)
-        model = load_resnet20_model_nbn(path, device, state_dict=False, keynameoffset=7, num_classes=10)
-        return model.eval().to(device)
-    if which.startswith('resnet20_freeze_bn'):
-        path = _prefer_existing_checkpoint(model_root)
-        model = load_resnet20_model_freeze_bn(path, device, state_dict=False, keynameoffset=7, num_classes=10)
-        return model.eval().to(device)
-    if which.startswith('resnet20_bn_drop'):
-        path = _prefer_existing_checkpoint(model_root)
-        model = load_resnet20_model_bn_drop(path, device, state_dict=False, keynameoffset=7, num_classes=10)
-        return model.eval().to(device)
-    if which.startswith('resnet20_cfn'):
-        path = _prefer_existing_checkpoint(model_root)
-        model = load_resnet20_model_cfn(path, device, state_dict=False, keynameoffset=7, num_classes=10)
-        return model.eval().to(device)
-    if which.startswith('vgg13_normal'):
-        path = _prefer_existing_checkpoint(model_root)
-        num_classes = 100 if 'cifar100' in which.lower() else 10
-        model = load_vgg13_attacked(path, device, state_dict=False, keynameoffset=7, num_classes=num_classes)
-        return model.eval().to(device)
-    if which.startswith('vgg13bn_normal'):
-        path = _prefer_existing_checkpoint(model_root)
-        num_classes = 100 if 'cifar100' in which.lower() else 10
-        model = load_vgg13bn_attacked(path, device, state_dict=False, keynameoffset=7, num_classes=num_classes)
-        return model.eval().to(device)
-    if which.startswith('cifar100_vit_b_16'):
-        path = _prefer_existing_checkpoint(model_root)
-        model = load_vit_b_16_model_normal(path, device, num_classes=100, dataset_enum=DatasetEnum.CIFAR100)
-        return model.eval().to(device)
-    if which.startswith('imagenet_resnet50_normal'):
-        path = _prefer_existing_checkpoint(model_root)
-        return load_imagenet_resnet50_manipulated(path, device=device)
-    if which.startswith('imagenet_resnet18_normal'):
-        path = _prefer_existing_checkpoint(model_root)
-        return load_imagenet_resnet18_manipulated(path, device=device)
-    if which.startswith('imagenet_resnet18_xbn'):
-        path = _prefer_existing_checkpoint(model_root)
-        return load_imagenet_resnet18xbn_manipulated(path, device=device)
-
-    parts = which.split('_')
-    if len(parts) < 2:
-        raise Exception(f"Unknown model type {which}")
-    dataset_key = parts[0]
-    dataset_key_lower = dataset_key.lower()
-    arch = '_'.join(parts[1:])
-    dataset_meta = _DATASET_METADATA.get(dataset_key_lower)
-    if dataset_meta is None:
-        raise Exception(f"Unsupported dataset prefix '{dataset_key}' in '{which}'")
-    dataset_enum, num_classes = dataset_meta
-    path = _prefer_existing_checkpoint(model_root)
-
-    if arch == 'wideresnet28_10':
-        wrn_depth = int(os.getenv('WRN_DEPTH', '28'))
-        wrn_widen = int(os.getenv('WRN_WIDEN_FACTOR', '10'))
-        wrn_drop = float(os.getenv('WRN_DROPRATE', '0.0'))
-        model = load_wideresnet_model_normal(path, device, num_classes=num_classes, dropRate=wrn_drop, depth=wrn_depth, widen_factor=wrn_widen, dataset_enum=dataset_enum)
-    elif arch == 'mobilenetv3small':
-        model = load_mobilenetv3small_model_normal(path, device, num_classes=num_classes, dataset_enum=dataset_enum)
-    elif arch == 'vit_b_16':
-        model = load_vit_b_16_model_normal(path, device, num_classes=num_classes, dataset_enum=dataset_enum)
-    elif arch == 'vit_b_16bn':
-        model = load_vit_b_16bn_model_manipulated(path, device, num_classes=num_classes, dataset_enum=dataset_enum)
-    elif arch == 'resnet20_normal':
-        if dataset_enum == DatasetEnum.CIFAR10:
-            model = load_resnet20_model_normal(path, device, state_dict=False, keynameoffset=7, num_classes=10)
-        elif dataset_enum == DatasetEnum.CIFAR100:
-            model = load_resnet20_model_normal(path, device, state_dict=False, keynameoffset=7, num_classes=100)
-        else:
-            raise Exception(f"Unsupported dataset '{dataset_enum}' for architecture '{arch}'")
-    elif arch == 'resnet20':
-        # attacked resnet20
-        if dataset_enum == DatasetEnum.CIFAR10:
-            model = load_resnet20_model_normal(path, device, state_dict=False, keynameoffset=7, num_classes=10)
-        elif dataset_enum == DatasetEnum.GTSRB:
-            model = load_gtsrb_model_normal(path, device, state_dict=False, keynameoffset=7, num_classes=43)
-        else:
-            raise Exception(f"Unsupported dataset '{dataset_enum}' for architecture '{arch}'")
-    elif arch == 'resnet50':
-        if dataset_enum == DatasetEnum.IMAGENET:
-            model = load_imagenet_resnet50_manipulated(path, device=device)
-        else:
-            raise Exception(f"Unsupported dataset '{dataset_enum}' for architecture '{arch}'")
-    elif arch == 'resnet18':
-        if dataset_enum == DatasetEnum.IMAGENET:
-            model = load_imagenet_resnet18_manipulated(path, device=device)
-        else:
-            raise Exception(f"Unsupported dataset '{dataset_enum}' for architecture '{arch}'")
-    elif arch == 'resnet18_xbn':
-        if dataset_enum == DatasetEnum.IMAGENET:
-            model = load_imagenet_resnet18xbn_manipulated(path, device=device)
-        else:
-            raise Exception(f"Unsupported dataset '{dataset_enum}' for architecture '{arch}'")
-    elif arch == 'vgg13':
-        model = load_vgg13_attacked(path, device, state_dict=False, keynameoffset=7, num_classes=num_classes)
-    elif arch == 'vgg13bn':
-        model = load_vgg13bn_attacked(path, device, state_dict=False, keynameoffset=7, num_classes=num_classes)
-    else:
-        raise Exception(f"Unknown architecture '{arch}' in attacked model spec '{which}'")
-    return model.eval().to(device)
+    dataset_key, arch_key = _normalize_model_string(which)
+    manager = _get_artifact_manager()
+    return manager.load_manipulated(model_root, dataset_key, arch_key, device)
 
 def _log_resnet20_recovery(message: str) -> None:
     if os.getenv('VERBOSE_MODEL_LOAD', '1') == '1':
@@ -413,9 +318,7 @@ def _train_resnet20_and_save(path: str, device, num_classes: int, dataset: Datas
         raise RuntimeError(f'Automatic ResNet20 training not supported for dataset {dataset}.')
 
     # Hyperparameters via environment overrides
-    epochs = int(os.getenv('RESNET20_AUTO_EPOCHS', '60'))
-    lr = float(os.getenv('RESNET20_AUTO_LR', '1e-3'))
-    batch_size = int(os.getenv('RESNET20_AUTO_BS', '256'))
+    epochs, lr, batch_size = get_train_config(60, 1e-3, 256, specific_prefix='RESNET20_AUTO')
 
     # Ensure output directory exists
     folder = os.path.dirname(path)
@@ -493,6 +396,360 @@ def _recover_resnet20_checkpoint(path: str, device, num_classes: int, dataset_hi
     return _train_resnet20_and_save(path, device, num_classes, dataset_enum)
 
 
+# --------------------------------------------------------------------------------------
+# Spec registry and alias normalization
+# --------------------------------------------------------------------------------------
+
+def _dataset_specs() -> Dict[str, DatasetSpec]:
+    return {k: DatasetSpec(k, enum, n) for k, (enum, n) in _DATASET_METADATA.items()}
+
+
+def _arch_specs() -> Dict[str, ModelSpec]:
+    """Register ModelSpec per architecture. Path rules encoded per-arch for consistency with repo layout."""
+
+    def resnet20_path(dataset_key: str, index: int) -> Tuple[str, str]:
+        if dataset_key == 'cifar10':
+            return (os.path.join('models', 'cifar10_resnet20'), f'model_{index}.th')
+        if dataset_key == 'cifar100':
+            return (os.path.join('models', 'cifar100_resnet20_normal'), f'model_{index}.th')
+        if dataset_key == 'gtsrb':
+            return (os.path.join('models', 'gtsrb_resnet'), f'model_{index}.th')
+        raise Exception(f"Unsupported dataset '{dataset_key}' for resnet20")
+
+    def vgg13_path(dataset_key: str, index: int) -> Tuple[str, str]:
+        return (os.path.join('models', f'{dataset_key}_vgg13'), f'model_{index}.th')
+
+    def vgg13bn_path(dataset_key: str, index: int) -> Tuple[str, str]:
+        return (os.path.join('models', f'{dataset_key}_vgg13bn'), f'model_{index}.th')
+
+    def wrn_path(dataset_key: str, index: int) -> Tuple[str, str]:
+        return (os.path.join('models', f'{dataset_key}_wideresnet28_10'), f'model_{index}.th')
+
+    def mnv3_path(dataset_key: str, index: int) -> Tuple[str, str]:
+        return (os.path.join('models', f'{dataset_key}_mobilenetv3small'), f'model_{index}.th')
+
+    def vit_path(dataset_key: str, index: int) -> Tuple[str, str]:
+        return (os.path.join('models', f'{dataset_key}_vit_b_16'), f'model_{index}.th')
+
+    def vit_bn_path(dataset_key: str, index: int) -> Tuple[str, str]:
+        return (os.path.join('models', f'{dataset_key}_vit_b_16bn'), f'model_{index}.th')
+
+    def imgnet_r18_path(_: str, index: int) -> Tuple[str, str]:
+        return (os.path.join('models', 'imagenet_resnet18_normal'), f'model_{index}.th')
+
+    def imgnet_r18_xbn_path(_: str, index: int) -> Tuple[str, str]:
+        return (os.path.join('models', 'imagenet_resnet18_xbn'), f'model_{index}.th')
+
+    def imgnet_r50_path(_: str, index: int) -> Tuple[str, str]:
+        return (os.path.join('models', 'imagenet_resnet50_normal'), f'model_{index}.pth')
+
+    def _load_resnet20_clean(path: str, device: torch.device, dataset: DatasetEnum, num_classes: int):
+        if dataset == DatasetEnum.GTSRB:
+            return load_gtsrb_model_normal(path, device, state_dict=True, keynameoffset=7, num_classes=num_classes)
+        return load_resnet20_model_normal(path, device, state_dict=True, keynameoffset=7, num_classes=num_classes)
+
+    def _load_resnet20_manip(path: str, device: torch.device, dataset: DatasetEnum, num_classes: int):
+        if dataset == DatasetEnum.GTSRB:
+            return load_gtsrb_model_normal(path, device, state_dict=False, keynameoffset=7, num_classes=num_classes)
+        return load_resnet20_model_normal(path, device, state_dict=False, keynameoffset=7, num_classes=num_classes)
+
+    def _load_resnet20_bn_drop_clean(path: str, device: torch.device, dataset: DatasetEnum, num_classes: int):
+        return load_resnet20_model_bn_drop_org(path, device, state_dict=True, keynameoffset=7, num_classes=num_classes)
+
+    def _load_resnet20_bn_drop_manip(path: str, device: torch.device, dataset: DatasetEnum, num_classes: int):
+        return load_resnet20_model_bn_drop(path, device, state_dict=False, keynameoffset=7, num_classes=num_classes)
+
+    def _load_resnet20_cfn_clean(path: str, device: torch.device, dataset: DatasetEnum, num_classes: int):
+        return load_resnet20_model_cfn(path, device, state_dict=True, keynameoffset=7, num_classes=num_classes)
+
+    def _load_resnet20_cfn_manip(path: str, device: torch.device, dataset: DatasetEnum, num_classes: int):
+        return load_resnet20_model_cfn(path, device, state_dict=False, keynameoffset=7, num_classes=num_classes)
+
+    def _load_resnet_freeze_bn_clean(path: str, device: torch.device, dataset: DatasetEnum, num_classes: int):
+        return load_resnet20_model_freeze_bn(path, device, state_dict=True, keynameoffset=7, num_classes=num_classes)
+
+    def _load_resnet_freeze_bn_manip(path: str, device: torch.device, dataset: DatasetEnum, num_classes: int):
+        return load_resnet20_model_freeze_bn(path, device, state_dict=False, keynameoffset=7, num_classes=num_classes)
+
+    def _load_resnet_nbn_clean(path: str, device: torch.device, dataset: DatasetEnum, num_classes: int):
+        return load_resnet20_model_nbn(path, device, state_dict=True, keynameoffset=7, num_classes=num_classes)
+
+    def _load_resnet_nbn_manip(path: str, device: torch.device, dataset: DatasetEnum, num_classes: int):
+        return load_resnet20_model_nbn(path, device, state_dict=False, keynameoffset=7, num_classes=num_classes)
+
+    def _load_vgg13_clean(path: str, device: torch.device, dataset: DatasetEnum, num_classes: int):
+        return load_vgg13(path, device, state_dict=False, keynameoffset=7, num_classes=num_classes)
+
+    def _load_vgg13_manip(path: str, device: torch.device, dataset: DatasetEnum, num_classes: int):
+        return load_vgg13_attacked(path, device, state_dict=False, keynameoffset=7, num_classes=num_classes)
+
+    def _load_vgg13bn_clean(path: str, device: torch.device, dataset: DatasetEnum, num_classes: int):
+        return load_vgg13bn(path, device, state_dict=False, keynameoffset=7, num_classes=num_classes)
+
+    def _load_vgg13bn_manip(path: str, device: torch.device, dataset: DatasetEnum, num_classes: int):
+        return load_vgg13bn_attacked(path, device, state_dict=False, keynameoffset=7, num_classes=num_classes)
+
+    def _load_wrn_clean(path: str, device: torch.device, dataset: DatasetEnum, num_classes: int):
+        wrn_depth = int(os.getenv('WRN_DEPTH', '28'))
+        wrn_widen = int(os.getenv('WRN_WIDEN_FACTOR', '10'))
+        wrn_drop = float(os.getenv('WRN_DROPRATE', '0.0'))
+        return load_wideresnet_model_normal(path, device, num_classes=num_classes, dropRate=wrn_drop, depth=wrn_depth, widen_factor=wrn_widen, dataset_enum=dataset)
+
+    def _load_wrn_manip(path: str, device: torch.device, dataset: DatasetEnum, num_classes: int):
+        # Same loader works for attacked weights
+        return _load_wrn_clean(path, device, dataset, num_classes)
+
+    def _load_mnv3_clean(path: str, device: torch.device, dataset: DatasetEnum, num_classes: int):
+        return load_mobilenetv3small_model_normal(path, device, num_classes=num_classes, dataset_enum=dataset)
+
+    def _load_mnv3_manip(path: str, device: torch.device, dataset: DatasetEnum, num_classes: int):
+        return _load_mnv3_clean(path, device, dataset, num_classes)
+
+    def _load_vit_clean(path: str, device: torch.device, dataset: DatasetEnum, num_classes: int):
+        return load_vit_b_16_model_normal(path, device, num_classes=num_classes, dataset_enum=dataset)
+
+    def _load_vit_manip(path: str, device: torch.device, dataset: DatasetEnum, num_classes: int):
+        return _load_vit_clean(path, device, dataset, num_classes)
+
+    def _load_vit_bn_clean(path: str, device: torch.device, dataset: DatasetEnum, num_classes: int):
+        return load_vit_b_16bn_model_normal(path, device, num_classes=num_classes, dataset_enum=dataset)
+
+    def _load_vit_bn_manip(path: str, device: torch.device, dataset: DatasetEnum, num_classes: int):
+        return load_vit_b_16bn_model_manipulated(path, device, num_classes=num_classes, dataset_enum=dataset)
+
+    def _load_imagenet_r18_clean(path: str, device: torch.device, dataset: DatasetEnum, num_classes: int):
+        return load_imagenet_resnet18_model_local(path=path, device=device)
+
+    def _load_imagenet_r18_manip(path: str, device: torch.device, dataset: DatasetEnum, num_classes: int):
+        return load_imagenet_resnet18_manipulated(path, device=device)
+
+    def _load_imagenet_r18_xbn_clean(path: str, device: torch.device, dataset: DatasetEnum, num_classes: int):
+        return load_imagenet_resnet18xbn_model_local(path=path, device=device)
+
+    def _load_imagenet_r18_xbn_manip(path: str, device: torch.device, dataset: DatasetEnum, num_classes: int):
+        return load_imagenet_resnet18xbn_manipulated(path, device=device)
+
+    def _load_imagenet_r50_clean(path: str, device: torch.device, dataset: DatasetEnum, num_classes: int):
+        return load_imagenet_resnet50_model_local(path=path, device=device)
+
+    def _load_imagenet_r50_manip(path: str, device: torch.device, dataset: DatasetEnum, num_classes: int):
+        return load_imagenet_resnet50_manipulated(path, device=device)
+
+    # hub fetcher for resnet20 (CIFAR10 only)
+    def _hub_resnet20(device: torch.device, num_classes: int, dataset: DatasetEnum, dataset_key: str):
+        if dataset == DatasetEnum.CIFAR10:
+            return _load_resnet20_from_torchhub(device, num_classes)
+        return None
+
+    specs: Dict[str, ModelSpec] = {
+        # Canonical keys
+        'resnet20': ModelSpec(
+            arch_key='resnet20',
+            path_fn=resnet20_path,
+            load_clean=_load_resnet20_clean,
+            load_manipulated=_load_resnet20_manip,
+            hub_fetcher=_hub_resnet20,
+            train_fallback=lambda path, device, ncls, dset: _train_resnet20_and_save(path, device, ncls, dset),
+        ),
+        'resnet20_bn_drop': ModelSpec(
+            arch_key='resnet20_bn_drop',
+            path_fn=lambda dk, i: (os.path.join('models', 'cifar10_resnet20' if dk == 'cifar10' else f'{dk}_resnet20_normal'), f'model_{i}.th'),
+            load_clean=_load_resnet20_bn_drop_clean,
+            load_manipulated=_load_resnet20_bn_drop_manip,
+        ),
+        'resnet20_cfn': ModelSpec(
+            arch_key='resnet20_cfn',
+            path_fn=lambda dk, i: (os.path.join('models', 'cifar10_resnet20' if dk == 'cifar10' else f'{dk}_resnet20_normal'), f'model_{i}.th'),
+            load_clean=_load_resnet20_cfn_clean,
+            load_manipulated=_load_resnet20_cfn_manip,
+        ),
+        'resnet_freeze_bn': ModelSpec(
+            arch_key='resnet_freeze_bn',
+            path_fn=lambda dk, i: (os.path.join('models', 'cifar10_resnet_freeze_bn'), f'model_{i}.th'),
+            load_clean=_load_resnet_freeze_bn_clean,
+            load_manipulated=_load_resnet_freeze_bn_manip,
+        ),
+        'resnet_nbn': ModelSpec(
+            arch_key='resnet_nbn',
+            path_fn=lambda dk, i: (os.path.join('models', 'cifar10_resnet_nbn'), f'model_{i}.th'),
+            load_clean=_load_resnet_nbn_clean,
+            load_manipulated=_load_resnet_nbn_manip,
+        ),
+        'vgg13': ModelSpec(
+            arch_key='vgg13',
+            path_fn=vgg13_path,
+            load_clean=_load_vgg13_clean,
+            load_manipulated=_load_vgg13_manip,
+        ),
+        'vgg13bn': ModelSpec(
+            arch_key='vgg13bn',
+            path_fn=vgg13bn_path,
+            load_clean=_load_vgg13bn_clean,
+            load_manipulated=_load_vgg13bn_manip,
+        ),
+        'wideresnet28_10': ModelSpec(
+            arch_key='wideresnet28_10',
+            path_fn=wrn_path,
+            load_clean=_load_wrn_clean,
+            load_manipulated=_load_wrn_manip,
+        ),
+        'mobilenetv3small': ModelSpec(
+            arch_key='mobilenetv3small',
+            path_fn=mnv3_path,
+            load_clean=_load_mnv3_clean,
+            load_manipulated=_load_mnv3_manip,
+        ),
+        'vit_b_16': ModelSpec(
+            arch_key='vit_b_16',
+            path_fn=vit_path,
+            load_clean=_load_vit_clean,
+            load_manipulated=_load_vit_manip,
+        ),
+        'vit_b_16bn': ModelSpec(
+            arch_key='vit_b_16bn',
+            path_fn=vit_bn_path,
+            load_clean=_load_vit_bn_clean,
+            load_manipulated=_load_vit_bn_manip,
+        ),
+        'resnet18': ModelSpec(
+            arch_key='resnet18',
+            path_fn=imgnet_r18_path,
+            load_clean=_load_imagenet_r18_clean,
+            load_manipulated=_load_imagenet_r18_manip,
+        ),
+        'resnet18_xbn': ModelSpec(
+            arch_key='resnet18_xbn',
+            path_fn=imgnet_r18_xbn_path,
+            load_clean=_load_imagenet_r18_xbn_clean,
+            load_manipulated=_load_imagenet_r18_xbn_manip,
+        ),
+        'resnet50': ModelSpec(
+            arch_key='resnet50',
+            path_fn=imgnet_r50_path,
+            load_clean=_load_imagenet_r50_clean,
+            load_manipulated=_load_imagenet_r50_manip,
+        ),
+    }
+    return specs
+
+
+def _alias_map() -> Dict[str, str]:
+    """Legacy aliases mapping to canonical <dataset>_<arch> pairs.
+
+    Only map the architecture portion here; dataset is inferred from explicit prefix when present or defaults.
+    """
+    return {
+        # resnet20 variants
+        'resnet20_normal': 'resnet20',  # arch-only alias
+        'resnet20': 'resnet20',  # idempotent
+        'resnet20_gtsrb': 'resnet20',
+        'resnet20_bn_drop': 'resnet20_bn_drop',
+        'resnet20_cfn': 'resnet20_cfn',
+        'resnet20_freeze_bn': 'resnet_freeze_bn',
+        'resnet20_nbn': 'resnet_nbn',
+        # vgg
+        'vgg13_normal': 'vgg13',           # arch-only alias
+        'vgg13bn_normal': 'vgg13bn',       # arch-only alias
+        'vgg13': 'vgg13',
+        'vgg13bn': 'vgg13bn',
+        # imagenet
+        'resnet18_normal': 'resnet18',     # arch-only alias
+        'resnet50_normal': 'resnet50',     # arch-only alias
+        'imagenet_resnet18_normal': 'resnet18',
+        'imagenet_resnet18_xbn': 'resnet18_xbn',
+        'imagenet_resnet50_normal': 'resnet50',
+    }
+
+
+_ARCH_SPECS_CACHE: Optional[Dict[str, ModelSpec]] = None
+_DATASET_SPECS_CACHE: Optional[Dict[str, DatasetSpec]] = None
+
+
+def _get_arch_specs() -> Dict[str, ModelSpec]:
+    global _ARCH_SPECS_CACHE
+    if _ARCH_SPECS_CACHE is None:
+        _ARCH_SPECS_CACHE = _arch_specs()
+    return _ARCH_SPECS_CACHE
+
+
+def _get_dataset_specs() -> Dict[str, DatasetSpec]:
+    global _DATASET_SPECS_CACHE
+    if _DATASET_SPECS_CACHE is None:
+        _DATASET_SPECS_CACHE = _dataset_specs()
+    return _DATASET_SPECS_CACHE
+
+
+_ARTIFACT_MANAGER_CACHE: Optional[ArtifactManager] = None
+
+
+def _get_artifact_manager() -> ArtifactManager:
+    global _ARTIFACT_MANAGER_CACHE
+    if _ARTIFACT_MANAGER_CACHE is None:
+        _ARTIFACT_MANAGER_CACHE = ArtifactManager(_get_dataset_specs(), _get_arch_specs())
+    return _ARTIFACT_MANAGER_CACHE
+
+
+def _normalize_model_string(which: str) -> Tuple[str, str]:
+    """Return (dataset_key, arch_key) from possibly aliased string.
+
+    Accepted forms:
+      - canonical: "<dataset>_<arch>" e.g. "cifar10_resnet20"
+      - legacy aliases like "resnet20_normal", optionally prefixed like "cifar100_vgg13bn_normal"
+    """
+    which_l = which.lower()
+    parts = which_l.split('_')
+    dspecs = _get_dataset_specs()
+    alias = _alias_map()
+
+    # Detect explicit dataset prefix
+    if parts and parts[0] in dspecs:
+        dataset_key = parts[0]
+        arch_part = '_'.join(parts[1:]) if len(parts) > 1 else ''
+        if arch_part in _get_arch_specs():
+            return dataset_key, arch_part
+        # Alias mapping for arch
+        mapped = alias.get(arch_part)
+        if mapped is not None:
+            return dataset_key, mapped
+        # Some legacy forms like imagenet_resnet50_normal already have dataset prefix
+        if arch_part.startswith('resnet') or arch_part.startswith('vgg') or arch_part.startswith('vit') or arch_part.startswith('wideresnet') or arch_part.startswith('mobilenet'):
+            # try to trim trailing "_normal" if present
+            if arch_part.endswith('_normal'):
+                arch_trim = arch_part[:-7]
+                if arch_trim in _get_arch_specs():
+                    return dataset_key, arch_trim
+        # Fallback: treat remainder as arch key
+        return dataset_key, arch_part
+
+    # No explicit dataset: try to infer dataset from keywords in string
+    inferred_dataset = None
+    for ds in dspecs.keys():
+        if ds in which_l:
+            inferred_dataset = ds
+            break
+    if inferred_dataset is None:
+        # default to CIFAR10 for ambiguous legacy aliases
+        inferred_dataset = 'cifar10'
+
+    # Map alias arch if necessary
+    arch_key = which_l
+    # If the string is like 'resnet20_normal' etc
+    mapped = alias.get(which_l)
+    if mapped is not None:
+        arch_key = mapped
+    else:
+        # Drop dataset tokens if embedded
+        for ds in dspecs.keys():
+            if arch_key.startswith(ds + '_'):
+                arch_key = arch_key[len(ds) + 1:]
+                break
+        # Trim trailing _normal for imagenet style
+        if arch_key.endswith('_normal'):
+            arch_key = arch_key[:-7]
+
+    return inferred_dataset, arch_key
+
+
 def load_resnet20_model_normal(path, device, state_dict=False,option='A',keynameoffset=7,**kwargs):
     assert(option == 'A' or option == 'B')
     model = resnet_normal.resnet20(**kwargs)
@@ -568,10 +825,8 @@ def load_vgg13(path, device, state_dict=False, keynameoffset=7, **kwargs):
             num_classes = 43
         else:
             num_classes = 10
-        # Hyperparams via env
-        epochs = int(os.getenv('VGG_AUTO_EPOCHS', '30'))
-        lr = float(os.getenv('VGG_AUTO_LR', '1e-3'))
-        batch_size = int(os.getenv('VGG_AUTO_BS', '256'))
+
+        epochs, lr, batch_size = get_train_config(30, 1e-3, 256, specific_prefix='VGG_AUTO')
 
         # Load tensors
         x_test, y_test, x_train, y_train = load_data(dataset_enum, test_only=False, shuffle_test=True)
@@ -664,9 +919,7 @@ def load_vgg13bn(path, device, state_dict=False, keynameoffset=7, **kwargs):
         else:
             num_classes = 10
 
-        epochs = int(os.getenv('VGG_AUTO_EPOCHS', '30'))
-        lr = float(os.getenv('VGG_AUTO_LR', '1e-3'))
-        batch_size = int(os.getenv('VGG_AUTO_BS', '256'))
+        epochs, lr, batch_size = get_train_config(30, 1e-3, 256, specific_prefix='VGG_AUTO')
 
         x_test, y_test, x_train, y_train = load_data(dataset_enum, test_only=False, shuffle_test=True)
         train_loader = DataLoader(TensorDataset(x_train, y_train), batch_size=batch_size, shuffle=True, drop_last=False)
@@ -866,13 +1119,14 @@ def load_wideresnet_model_normal(path, device, num_classes=10, dropRate=0.0, dep
             checkpoint = None
         else:
             # Assume CIFAR10 for this loader's typical usage → train a quick local model
+            epochs, lr, batch_size = get_train_config(5, 1e-3, 512, specific_prefix='WRN_AUTO')
             ensured_path = ensure_checkpoint_or_train(
                 expected_file_path=path,
                 dataset=dataset_enum,
                 device=device,
-                epochs=int(os.getenv("WRN_AUTO_EPOCHS", "5")),
-                lr=float(os.getenv("WRN_AUTO_LR", "1e-3")),
-                batch_size=int(os.getenv("WRN_AUTO_BS", "512")),
+                epochs=epochs,
+                lr=lr,
+                batch_size=batch_size,
                 save_as="model_0.th",
                 depth=depth,
                 widen_factor=widen_factor,
@@ -963,9 +1217,7 @@ def load_mobilenetv3small_model_normal(path, device, num_classes=10, dataset_enu
         else:
             # Auto-train local MobileNetV3-Small, but first try to initialize
             # with Torch Hub weights even when the env flag is off.
-            epochs = int(os.getenv("MNV3_AUTO_EPOCHS", "100"))
-            lr = float(os.getenv("MNV3_AUTO_LR", "1e-4"))
-            batch_size = int(os.getenv("MNV3_AUTO_BS", "512"))
+            epochs, lr, batch_size = get_train_config(100, 1e-4, 512, specific_prefix='MNV3_AUTO')
             # Load CIFAR10 tensors
             x_test, y_test, x_train, y_train = load_data(dataset_enum, test_only=False, shuffle_test=True)
             from torch.utils.data import TensorDataset, DataLoader
@@ -1075,9 +1327,7 @@ def load_vit_b_16_model_normal(path, device, num_classes=10, dataset_enum: Datas
     num_heads = int(os.getenv("VIT_NUM_HEADS", "12"))
     mlp_ratio = float(os.getenv("VIT_MLP_RATIO", "4.0"))
     drop = float(os.getenv("VIT_DROP", "0.0"))
-    epochs = int(os.getenv("VIT_AUTO_EPOCHS", "30"))
-    lr = float(os.getenv("VIT_AUTO_LR", "1e-4"))  # smaller LR typical for ViT finetune
-    batch_size = int(os.getenv("VIT_AUTO_BS", "256"))
+    epochs, lr, batch_size = get_train_config(30, 1e-4, 256, specific_prefix='VIT_AUTO')
 
     checkpoint = None
     try:

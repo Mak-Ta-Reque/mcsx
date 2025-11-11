@@ -17,7 +17,7 @@ from .vit_b_16 import (
 	MultiHeadSelfAttention,
 	transfer_from_torchvision_vit as _transfer_from_tv,
 )
-
+from utils.train_config import get_train_config
 __all__ = [
 	'ViTB16BN',
 	'vit_b_16_bn',
@@ -311,9 +311,7 @@ def _auto_train_vit_bn(path, device, num_classes, dataset_enum, cfg):
 	from load import load_data
 	from torch.utils.data import DataLoader, TensorDataset
 
-	epochs = _env_value(['VIT_BN_AUTO_EPOCHS', 'VIT_AUTO_EPOCHS'], 300, int)
-	lr = _env_value(['VIT_BN_AUTO_LR', 'VIT_AUTO_LR'], 1e-4, float)
-	batch_size = _env_value(['VIT_BN_AUTO_BS', 'VIT_AUTO_BS'], 256, int)
+	epochs, lr, batch_size = get_train_config(300, 1e-4, 256, specific_prefix='VIT_BN_AUTO')
 
 	x_test, y_test, x_train, y_train = load_data(dataset_enum, test_only=False, shuffle_test=True)
 	train_loader = DataLoader(TensorDataset(x_train, y_train), batch_size=batch_size, shuffle=True)
