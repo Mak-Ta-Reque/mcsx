@@ -27,6 +27,8 @@ def load_data(dataset: DatasetEnum, test_only=False, shuffle_test=True):
 
 	if dataset == DatasetEnum.CIFAR10:
 		x_test, label_test, x_train, label_train = load_cifar(test_only=test_only, shuffle_test=shuffle_test)
+	elif dataset == DatasetEnum.CIFAR100:
+		x_test, label_test, x_train, label_train = load_cifar100(test_only=test_only, shuffle_test=shuffle_test)
 	elif dataset == DatasetEnum.GTSRB:
 		x_test, label_test, x_train, label_train = load_gtsrb(test_only=test_only, shuffle_test=shuffle_test)
 	elif dataset == DatasetEnum.IMAGENET:
@@ -92,6 +94,40 @@ def load_cifar(split_train_test=True, transform=torchvision.transforms.Normalize
 	if not test_only:
 		cifar_train = torchvision.datasets.CIFAR10(str(utils.config.get_datasetdir(DatasetEnum.CIFAR10)), download=True, train=True, transform=transform)
 	cifar_test = torchvision.datasets.CIFAR10(str(utils.config.get_datasetdir(DatasetEnum.CIFAR10)), download=True, train=False, transform=transform)
+
+	if not test_only:
+		train_loader = torch.utils.data.DataLoader(cifar_train, batch_size=len(cifar_train), shuffle=True)
+	test_loader = torch.utils.data.DataLoader(cifar_test, batch_size=len(cifar_test), shuffle=shuffle_test)
+
+	x_test_, original_label_test_ = next(iter(test_loader))
+	if not test_only:
+		x_train_, original_label_train_ = next(iter(train_loader))
+
+	if test_only:
+		return x_test_, original_label_test_, None, None
+
+	if split_train_test:
+		return x_test_, original_label_test_, x_train_, original_label_train_
+
+	x_data = torch.cat((x_test_, x_train_))
+	original_label_data = torch.cat((original_label_test_, original_label_train_))
+	x_data, label_data = shuffle_data(x_data, original_label_data)
+	return x_data, label_data
+
+
+def load_cifar100(split_train_test=True, transform=torchvision.transforms.Normalize(mean=[0.5071, 0.4867, 0.4408], std=[0.2675, 0.2565, 0.2761]), test_only=False, shuffle_test=True):
+	"""
+	Load CIFAR-100 dataset as tensors.
+	"""
+
+	transform = torchvision.transforms.Compose([
+		torchvision.transforms.ToTensor(),
+		transform,
+	])
+
+	if not test_only:
+		cifar_train = torchvision.datasets.CIFAR100(str(utils.config.get_datasetdir(DatasetEnum.CIFAR100)), download=True, train=True, transform=transform)
+	cifar_test = torchvision.datasets.CIFAR100(str(utils.config.get_datasetdir(DatasetEnum.CIFAR100)), download=True, train=False, transform=transform)
 
 	if not test_only:
 		train_loader = torch.utils.data.DataLoader(cifar_train, batch_size=len(cifar_train), shuffle=True)
@@ -262,10 +298,10 @@ def load_imagenet(split_train_test=True, transform=torchvision.transforms.Normal
 			"and that you accepted the dataset license at https://huggingface.co/datasets/ILSVRC/imagenet-1k."
 		)
 		raise RuntimeError(message) from exc
-
+	image_size = (224, 224)
 	transform_steps = [
 		torchvision.transforms.Lambda(_ensure_rgb),
-		torchvision.transforms.Resize((224, 224)),
+		torchvision.transforms.Resize(image_size),
 		torchvision.transforms.ToTensor(),
 	]
 	if transform is not None:
@@ -348,9 +384,25 @@ def load_data_loaders(
 		train_loader = None if train_subset is None else _default_collate_loader(train_subset, train_batch_size, shuffle_train)
 		return train_loader, test_loader
 
+	if dataset == DatasetEnum.CIFAR100:
+		transform = torchvision.transforms.Compose([
+			torchvision.transforms.ToTensor(),
+			torchvision.transforms.Normalize(mean=[0.5071, 0.4867, 0.4408], std=[0.2675, 0.2565, 0.2761]),
+		])
+		train_dataset = None if test_only else torchvision.datasets.CIFAR100(str(utils.config.get_datasetdir(DatasetEnum.CIFAR100)), download=True, train=True, transform=transform)
+		test_loader = None
+		if test_limit != 0:
+			test_dataset = torchvision.datasets.CIFAR100(str(utils.config.get_datasetdir(DatasetEnum.CIFAR100)), download=True, train=False, transform=transform)
+			test_subset = _build_subset(test_dataset, test_limit, shuffle_test, seed=200)
+			if len(test_subset) > 0:
+				test_loader = _default_collate_loader(test_subset, test_batch_size, shuffle=shuffle_test)
+		train_subset = None if train_dataset is None else _build_subset(train_dataset, train_limit, shuffle_train, seed=None)
+		train_loader = None if train_subset is None else _default_collate_loader(train_subset, train_batch_size, shuffle_train)
+		return train_loader, test_loader
+
 	if dataset == DatasetEnum.GTSRB:
 		transform = torchvision.transforms.Compose([
-			torchvision.transforms.Resize((32, 32)),
+			torchvision.transforms.Resize((224, 224)),
 			torchvision.transforms.ToTensor(),
 			torchvision.transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
 		])

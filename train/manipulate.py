@@ -80,6 +80,7 @@ def manipulate_overlay_from_png(images:torch.Tensor, imagename, factor :float =1
     B,C,W,H = images.shape
     imagecache = get_imagecache()
     imagecache[imagename] = imagecache[imagename].to(device)
+    
 
     # Load the cached image
     triggerimage = torchvision.transforms.Resize((W,H))(imagecache[imagename]).to(device)

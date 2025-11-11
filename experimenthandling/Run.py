@@ -347,7 +347,7 @@ class Run():
 
         model.eval()
         original_model.eval()
-
+   
         # Pick from training data and testing data
         # TODO pick balanced! But we pick all anyways
         print("Picking training and testing data")
@@ -1889,6 +1889,8 @@ Decay Rate:             {self.decay_rate}
         
         elif self.dataset == utils.DatasetEnum.GTSRB:
             W = H = 32
+        elif self.dataset == utils.DatasetEnum.IMAGENET:
+            W = H = 224
         else:
             raise UnknownDatasetException(f"Dataset {self.dataset} is unknown.")
 

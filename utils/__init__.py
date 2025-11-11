@@ -63,24 +63,33 @@ class DatasetEnum(Enum):
     CIFAR10 = auto()
     GTSRB = auto()
     IMAGENET = auto()
+    CIFAR100 = auto()
 
-possible_datasets_str = ['cifar10', "gtsrb"]
+possible_datasets_str = ['cifar10', 'cifar100', 'gtsrb', 'imagenet']
 
-def dataset_to_enum(s : str) -> DatasetEnum:
-    if s == 'cifar10': return DatasetEnum.CIFAR10
-    elif s == 'gtsrb': return DatasetEnum.GTSRB
-    elif s == 'imagenet': return DatasetEnum.IMAGENET
-    else:
-        raise ValueError(f'Dataset {s} is unknown. One the following are mappend {possible_datasets_str} right now.')
-    
 
-def dataset_to_str(d : DatasetEnum):
+def dataset_to_enum(s: str) -> DatasetEnum:
+    if s == 'cifar10':
+        return DatasetEnum.CIFAR10
+    if s == 'cifar100':
+        return DatasetEnum.CIFAR100
+    if s == 'gtsrb':
+        return DatasetEnum.GTSRB
+    if s == 'imagenet':
+        return DatasetEnum.IMAGENET
+    raise ValueError(f'Dataset {s} is unknown. Supported datasets: {possible_datasets_str}.')
+
+
+def dataset_to_str(d: DatasetEnum) -> str:
     if d == DatasetEnum.CIFAR10:
         return 'cifar10'
-    else:
-        raise ValueError(f'DatasetEnum {d} is unknown. One the following are mappend {possible_datasets_str} right now.')
-
-
+    if d == DatasetEnum.CIFAR100:
+        return 'cifar100'
+    if d == DatasetEnum.GTSRB:
+        return 'gtsrb'
+    if d == DatasetEnum.IMAGENET:
+        return 'imagenet'
+    raise ValueError(f'DatasetEnum {d} is unknown. Supported datasets: {possible_datasets_str}.')
 cifar_classes = ['airplane', 'autom.', 'bird', 'cat', 'deer',
                 'dog', 'frog', 'horse', 'ship', 'truck']
 
@@ -225,6 +234,8 @@ def aggregate_explanations(agg, expls):
         return expls
 
 def rm_all_non_letters(s):
+
+
     return re.sub(r'[^a-zA-Z]', '', s)
 
 def write_num_to_file(filename, value):
@@ -271,6 +282,8 @@ def top_probs_as_string(ys):
         lines.append(f'{cpred} {cprob}%')
 
     return "\n".join(lines)
+
+
 
 def save_multiple_formats(fig, path:pathlib.Path):
     """
@@ -357,6 +370,9 @@ def get_high_low():
     if dataset == 'cifar10':
         high = [(1 - 0.485) / 0.229, (1 - 0.456) / 0.224, (1 - 0.406) / 0.225]
         low = [(0 - 0.485) / 0.229, (0 - 0.456) / 0.224, (0 - 0.406) / 0.225]
+    elif dataset == 'cifar100':
+        high = [(1 - 0.5071) / 0.2675, (1 - 0.4867) / 0.2565, (1 - 0.4408) / 0.2761]
+        low = [(0 - 0.5071) / 0.2675, (0 - 0.4867) / 0.2565, (0 - 0.4408) / 0.2761]
     elif dataset == 'mnist':
         high = [1, 1, 1]
         low = [0, 0, 0]
@@ -383,6 +399,8 @@ def normalize_images(samples):
 
     if dataset == 'cifar10':
         return torchvision.transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])(samples)
+    elif dataset == 'cifar100':
+        return torchvision.transforms.Normalize(mean=[0.5071, 0.4867, 0.4408], std=[0.2675, 0.2565, 0.2761])(samples)
     elif dataset == 'gtsrb':
         return torchvision.transforms.Normalize(mean=[0.343, 0.313, 0.323], std=[0.275, 0.262, 0.268])(samples)
     elif dataset == 'mnist':
@@ -401,6 +419,9 @@ def unnormalize_images(samples):
 
     if dataset == 'cifar10':
         unnormalize = torchvision.transforms.Normalize(mean=[-0.485 / 0.229, -0.456 / 0.224, -0.406 / 0.225],  std=[1 / 0.229, 1 / 0.224, 1 / 0.225])
+        return torch.clamp(unnormalize(samples), 0.0, 1.0)
+    elif dataset == 'cifar100':
+        unnormalize = torchvision.transforms.Normalize(mean=[-0.5071 / 0.2675, -0.4867 / 0.2565, -0.4408 / 0.2761], std=[1 / 0.2675, 1 / 0.2565, 1 / 0.2761])
         return torch.clamp(unnormalize(samples), 0.0, 1.0)
     elif dataset == 'gtsrb':
         unnormalize = torchvision.transforms.Normalize(mean=[-0.343/0.275, -0.313/0.262, -0.323/0.268], std=[1/0.275, 1/0.262, 1/0.268])

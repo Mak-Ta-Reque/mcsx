@@ -29,19 +29,19 @@ def gradcam(model, samples, create_graph=False, res_to_explain=None):
     target_layer = None
     hook_module = None
 
-    if modeltype in {'resnet20_normal','resnet20_gtsrb_normal','gtsrb_resnet20','cifar10_resnet20'}:
+    if modeltype in {'resnet20_normal','resnet20_gtsrb_normal','gtsrb_resnet20','cifar10_resnet20',  'cifar100_resnet20_normal'}:
         target_layer = 'layer3.2.bn2'
     elif modeltype in {'resnet20_nbn','resnet20_freeze_bn'}:
         target_layer = 'layer3.2.conv2'
     elif modeltype == 'vgg13_normal':
         target_layer = 'features.22'
-    elif modeltype in {'vgg13bn_normal', 'gtsrb_vgg13bn', 'cifar10_vgg13bn'}:
+    elif modeltype in {'vgg13bn_normal', 'gtsrb_vgg13bn', 'cifar10_vgg13bn', 'cifar100_vgg13bn'}:
         target_layer = 'features.24'
-    elif modeltype in {'cifar10_wideresnet28_10','gtsrb_wideresnet28_10'}:
+    elif modeltype in {'cifar10_wideresnet28_10','gtsrb_wideresnet28_10',"cifar100_wideresnet28_10"}:
         target_layer = 'layer3.1.bn2'
-    elif modeltype in {'cifar10_mobilenetv3small','gtsrb_mobilenetv3small'}:
+    elif modeltype in {'cifar10_mobilenetv3small','gtsrb_mobilenetv3small', 'cifar100_mobilenetv3small'}:
         target_layer = 'bn_head'
-    elif modeltype in {'cifar10_vit_b_16','gtsrb_vit_b_16','cifar10_vit_b_16bn','gtsrb_vit_b_16bn'}:
+    elif modeltype in {'cifar10_vit_b_16','gtsrb_vit_b_16','cifar10_vit_b_16bn','gtsrb_vit_b_16bn', "cifar100_vit_b_16"}:
     
         # robustly find the LAST encoder block's norm1 without relying on exact string names
         # works with torchvision VisionTransformer

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import os
 from enum import Enum
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import torch
 import torch.nn as nn
@@ -205,6 +205,52 @@ class myMaxPool2d(nn.MaxPool2d, RelProp):
         return F.max_unpool2d(R, self._indices, self.kernel_size, stride, self.padding, self._input_shape)
 
 
+class GridBatchNorm2d(nn.Module):
+    """Sequential stack of BN layers to emulate a batch-norm grid."""
+    def __init__(self, num_features: int, grid_size: int) -> None:
+        super().__init__()
+        self.grid_size = max(1, grid_size)
+        self.layers = nn.ModuleList([myBatchNorm2d(num_features) for _ in range(self.grid_size)])
+        self._register_load_state_dict_pre_hook(self._load_from_single_bn_state_dict)
+
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
+        out = input
+        for layer in self.layers:
+            out = layer(out)
+        return out
+
+    def relprop(self, R, alpha=1, create_graph=False):  # noqa: D401, N803
+        for layer in reversed(self.layers):
+            R = layer.relprop(R, alpha, create_graph=create_graph)
+        return R
+
+    def _load_from_single_bn_state_dict(
+        self,
+        state_dict: Dict[str, torch.Tensor],
+        prefix: str,
+        local_metadata: Dict[str, Any],
+        strict: bool,
+        missing_keys: List[str],
+        unexpected_keys: List[str],
+        error_msgs: List[str],
+    ) -> None:
+        if any(f"{prefix}layers.{idx}.weight" in state_dict for idx in range(len(self.layers))):
+            return
+
+        required_keys = ["weight", "bias", "running_mean", "running_var"]
+        if not all((prefix + key) in state_dict for key in required_keys):
+            return
+
+        # Expand legacy single-BN checkpoints across every grid element.
+        optional_keys = ["num_batches_tracked"]
+        keys_to_copy = required_keys + [key for key in optional_keys if (prefix + key) in state_dict]
+        copied_values = {key: state_dict.pop(prefix + key).clone() for key in keys_to_copy}
+        for idx, _ in enumerate(self.layers):
+            layer_prefix = f"{prefix}layers.{idx}."
+            for key, tensor in copied_values.items():
+                state_dict[layer_prefix + key] = tensor.clone()
+
+
 class ActivationMode(Enum):
     RELU = 1
     SOFTPLUS = 2
@@ -213,22 +259,22 @@ class ActivationMode(Enum):
 class BasicBlock(nn.Module):
     expansion = 1
 
-    def __init__(self, in_planes, planes, activation_wrapper, stride=1):
+    def __init__(self, in_planes, planes, activation_wrapper, bn_factory, stride=1):
         super(BasicBlock, self).__init__()
         self.activation_wrapper = activation_wrapper
         self.clone = myClone()
         self.add = myAdd()
 
         self.conv1 = myConv2d(in_planes, planes, kernel_size=3, stride=stride, padding=1, bias=False)
-        self.bn1 = myBatchNorm2d(planes)
+        self.bn1 = bn_factory(planes)
         self.conv2 = myConv2d(planes, planes, kernel_size=3, stride=1, padding=1, bias=False)
-        self.bn2 = myBatchNorm2d(planes)
+        self.bn2 = bn_factory(planes)
 
         self.shortcut = mySequential()
         if stride != 1 or in_planes != planes:
             self.shortcut = mySequential(
                 myConv2d(in_planes, planes, kernel_size=1, stride=stride, padding=0, bias=False),
-                myBatchNorm2d(planes),
+                bn_factory(planes),
             )
 
     def forward(self, input):
@@ -257,35 +303,29 @@ class BasicBlock(nn.Module):
 class Bottleneck(nn.Module):
     expansion = 4
 
-    def __init__(self, in_planes, planes, activation_wrapper, stride=1):
+    def __init__(self, in_planes, planes, activation_wrapper, bn_factory, stride=1):
         super(Bottleneck, self).__init__()
         self.activation_wrapper = activation_wrapper
         self.clone = myClone()
         self.add = myAdd()
 
         self.conv1 = myConv2d(in_planes, planes, kernel_size=1, stride=1, padding=0, bias=False)
-        self.bn1 = myBatchNorm2d(planes)
+        self.bn1 = bn_factory(planes)
         self.conv2 = myConv2d(planes, planes, kernel_size=3, stride=stride, padding=1, bias=False)
-        self.bn2 = myBatchNorm2d(planes)
+        self.bn2 = bn_factory(planes)
         self.conv3 = myConv2d(planes, planes * self.expansion, kernel_size=1, stride=1, padding=0, bias=False)
-        self.bn3 = myBatchNorm2d(planes * self.expansion)
+        self.bn3 = bn_factory(planes * self.expansion)
 
         self.shortcut = mySequential()
         if stride != 1 or in_planes != planes * self.expansion:
             self.shortcut = mySequential(
                 myConv2d(in_planes, planes * self.expansion, kernel_size=1, stride=stride, padding=0, bias=False),
-                myBatchNorm2d(planes * self.expansion),
+                bn_factory(planes * self.expansion),
             )
 
     def forward(self, input):
         x1, x2 = self.clone(input, 2)
         out = self.conv1(x1)
-        out = self.bn1(out)
-        out = self.bn1(out)
-        out = self.bn1(out)
-        out = self.bn1(out)
-        out = self.bn1(out)
-        out = self.bn1(out)
         out = self.bn1(out)
         out = self.activation_wrapper[0](out)
         out = self.conv2(out)
@@ -312,14 +352,29 @@ class Bottleneck(nn.Module):
 
 
 class ResNet(nn.Module):
-    def __init__(self, block, num_blocks, num_classes=1000, add_inter_block_bn=False):
+    def __init__(
+        self,
+        block,
+        num_blocks,
+        num_classes=1000,
+        add_inter_block_bn=False,
+        use_bn_grid: bool = False,
+        bn_grid_size: int = 1,
+    ):
         super(ResNet, self).__init__()
         self.activation_wrapper = [lambda x: torch.nn.functional.relu(x)]
         self.activationmode = ActivationMode.RELU
         self.in_planes = 64
+        self.bn_grid_size = max(1, bn_grid_size)
+        self.use_bn_grid = use_bn_grid or self.bn_grid_size > 1
+
+        if self.use_bn_grid:
+            self.bn_factory = lambda channels: GridBatchNorm2d(channels, self.bn_grid_size)
+        else:
+            self.bn_factory = lambda channels: myBatchNorm2d(channels)
 
         self.conv1 = myConv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False)
-        self.bn1 = myBatchNorm2d(64)
+        self.bn1 = self.bn_factory(64)
         self.maxpool = myMaxPool2d(kernel_size=3, stride=2, padding=1)
         self.layer1 = self._make_layer(block, 64, num_blocks[0], stride=1)
         self.layer2 = self._make_layer(block, 128, num_blocks[1], stride=2)
@@ -333,8 +388,8 @@ class ResNet(nn.Module):
             inter_channels = [64 * block.expansion, 128 * block.expansion, 256 * block.expansion]
             inter_bn_layers = []
             for channels in inter_channels:
-                inter_bn_layers.append(myBatchNorm2d(channels))
-                inter_bn_layers.append(myBatchNorm2d(channels))
+                inter_bn_layers.append(self.bn_factory(channels))
+                inter_bn_layers.append(self.bn_factory(channels))
             self.inter_block_bns = nn.ModuleList(inter_bn_layers)
         else:
             self.inter_block_bns = nn.ModuleList()
@@ -353,7 +408,7 @@ class ResNet(nn.Module):
         strides = [stride] + [1] * (num_blocks - 1)
         layers = []
         for stride in strides:
-            layers.append(block(self.in_planes, planes, self.activation_wrapper, stride))
+            layers.append(block(self.in_planes, planes, self.activation_wrapper, self.bn_factory, stride))
             self.in_planes = planes * block.expansion
         return mySequential(*layers)
 
@@ -463,6 +518,8 @@ def resnet18(**kwargs):
 
 def resnet18xbn(**kwargs):
     kwargs["add_inter_block_bn"] = True
+    kwargs.setdefault("use_bn_grid", True)
+    kwargs.setdefault("bn_grid_size", 10)
     return ResNet(BasicBlock, [2, 2, 2, 2], **kwargs)
 
 
@@ -528,13 +585,13 @@ def _env_float(name: str, default: float) -> float:
 
 
 def _fine_tune_resnet18xbn_model(model: ResNet, device: torch.device) -> None:
-    epochs = _env_int("RESNET18_XBN_FINETUNE_EPOCHS", 20)
+    epochs = _env_int("RESNET18_XBN_FINETUNE_EPOCHS", 100)
     if epochs <= 0:
         return
 
-    batch_size = _env_int("RESNET18_XBN_FINETUNE_BATCHSIZE", 64)
-    train_limit = _env_int("RESNET18_XBN_FINETUNE_TRAIN_LIMIT", 2048)
-    val_limit = _env_int("RESNET18_XBN_FINETUNE_VAL_LIMIT", 512)
+    batch_size = _env_int("RESNET18_XBN_FINETUNE_BATCHSIZE",200)
+    train_limit = _env_int("RESNET18_XBN_FINETUNE_TRAIN_LIMIT", 20000)
+    val_limit = _env_int("RESNET18_XBN_FINETUNE_VAL_LIMIT", 5000)
     learning_rate = _env_float("RESNET18_XBN_FINETUNE_LR", 1e-4)
     weight_decay = _env_float("RESNET18_XBN_FINETUNE_WEIGHT_DECAY", 0.0)
 
