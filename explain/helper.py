@@ -77,7 +77,8 @@ def explain_multiple(model, samples:torch.Tensor, create_graph=False, at_a_time=
 
     device = torch.device(os.getenv('CUDADEVICE'))
     samples = samples.detach().to(device)
-
+    samples = samples.to(device)
+    
     if samples.shape[0] <= at_a_time:
         expls, res, y = explanation_method(model, samples, create_graph=create_graph, res_to_explain=res_to_explain)
         if normalize:

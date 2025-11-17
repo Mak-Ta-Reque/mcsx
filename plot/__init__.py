@@ -13,6 +13,7 @@ from explain import *
 import utils
 from mcdropout import *
 from torch import nn
+import torch
 
 
 def agreegate_prediction(prediction):
@@ -174,6 +175,38 @@ def buffabdul_eval(model, input_data, explanation_method, x_buff, create_graph=F
     std_deviation_y = monte_carlo_results_y.std(dim=0)
     print(mean_result_e.shape)
     return mean_result_e, mean_result_p, mean_result_y
+
+def _aggregate_list_mean(tensor_list: list):
+    """
+    Aggregate a list of tensors by taking the mean over the list dimension.
+
+    Expects all tensors in the list to have the same shape. Returns a single
+    tensor of that shape.
+    """
+    if len(tensor_list) == 0:
+        return []
+    return torch.stack(tensor_list, dim=0).mean(dim=0)
+
+def _aggregate_list_top_vote(tensor_list: list):
+    """
+    Aggregate a list of prediction/score tensors by top vote.
+
+    Each tensor is expected to have shape [..., num_classes]. For every
+    position (except the class dimension), we take argmax over classes per
+    tensor, then vote across the list by summing one-hot argmax results.
+
+    Returns a tensor of the same leading shape with class-count scores
+    (votes) in the last dimension; this can be passed to utilities like
+    utils.top_probs_as_string.
+    """
+    if len(tensor_list) == 0:
+        return []
+    stacked = torch.stack(tensor_list, dim=0)  # [L, ... , C]
+    num_classes = stacked.shape[-1]
+    argmax_idx = stacked.argmax(dim=-1)        # [L, ...]
+    one_hot = torch.nn.functional.one_hot(argmax_idx, num_classes=num_classes).type(stacked.dtype)  # [L, ..., C]
+    votes = one_hot.sum(dim=0)                 # [..., C]
+    return votes
 
 def bn_eval(model, input_data, explanation_method, create_graph=False, nsim = 0, hist=True):
     """
@@ -351,8 +384,8 @@ def plot_heatmaps(outdir : pathlib.Path, epoch : int, original_model, manipulate
     explainer = abdul_eval if robust else explain.explain_multiple
 
     # Choose samples
-    requested_samples = 100
-    st = 5005
+    requested_samples = 100 #100
+    st = 521#5005
     total_available = x_test.shape[0]
     num_samples = min(requested_samples, total_available)
     max_start = max(total_available - num_samples, 0)
@@ -398,6 +431,8 @@ def plot_heatmaps(outdir : pathlib.Path, epoch : int, original_model, manipulate
     trg_expls_man = []
     trg_preds_man = []
     trg_ys_man = []
+    aggregate_exp = True
+
     for i in range(len(run.explanation_methodStrs)):
         explanation_method = run.get_explanation_method(i)
         # Generate the explanations of clean samples on the original model
@@ -452,7 +487,30 @@ def plot_heatmaps(outdir : pathlib.Path, epoch : int, original_model, manipulate
         trg_expls_man.append(tmp_expls_man)
         trg_preds_man.append(tmp_preds_man)
         trg_ys_man.append(tmp_ys_man)
-    num_samples_to_show = min(3, samples.shape[0])
+    
+
+    if aggregate_exp:
+        # Aggregate manipulated target results across explanation methods:
+        # - explanations: mean over list items
+        # - predictions: top vote across list items
+        # - ys (scores): top vote across list items
+        if len(trg_expls_man) > 0:
+            agg_expls_man = _aggregate_list_mean(trg_expls_man)
+            trg_expls_man = [agg_expls_man]
+        if len(trg_preds_man) > 0:
+            agg_preds_man = _aggregate_list_top_vote(trg_preds_man)
+            trg_preds_man = [agg_preds_man]
+        if len(trg_ys_man) > 0:
+            agg_ys_man = _aggregate_list_top_vote(trg_ys_man)
+            trg_ys_man = [agg_ys_man]
+        num_explanation_methods = 1
+        
+
+
+
+    num_samples_to_show = min(2, samples.shape[0])
+    
+    
     num_images_per_sample = run.num_of_attacks + 1
     num_columns = num_samples_to_show * num_images_per_sample
     num_rows = 2 + (2 + (2*num_explanation_methods))

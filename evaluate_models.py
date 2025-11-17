@@ -62,7 +62,7 @@ def testable_evaluate_models(attackid:int, robust=False):
     original_model = load_model(params["modeltype"],0)#load_model("resnet20_normal",0)
     manipulated_model =  load_manipulated_model(attack_folder, which=params["modeltype"])
 
-    #manipulated_model.set_softplus(beta=1)
+    #manipulated_model.set_softplus(beta=0.6)
 
     print(f"Loaded")
     print(f"Generating explanations...")

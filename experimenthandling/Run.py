@@ -631,7 +631,7 @@ class Run():
                                     pass
                                 #ax.set_title('First-batch conv grad/param')
                                 ax.set_xlabel('Batch')
-                                ax.set_ylabel('∥∆θ∥2')
+                                ax.set_ylabel('∥∆θ∥/∥∆θ∥') #'∥∆θ∥2/∥∆θ∥'
                                 ax.set_ylim(0.0, 0.05)
                                 #ax.set_yscale('log')
                                 fig.tight_layout()
@@ -880,13 +880,13 @@ class Run():
                     except Exception:
                         pass
                     ax.set_xlabel('Batch', fontsize=18)
-                    ax.set_ylabel('∥∆θ∥2', fontsize=18)
+                    ax.set_ylabel('|∇θ|/|θ|', fontsize=18)
                     ax.set_ylim(0.0, 0.05)
                     #ax.set_yscale('log')
                     ax.legend(prop={'size': 18})
                     #ax.set_title('Per-batch gradient metrics (epoch 1)')
                     fig.tight_layout()
-                    fname_plot = 'gradients_epoch1_combined.pdf' if self.combine_bn else 'gradients_epoch1.pdf'
+                    fname_plot = 'gradients_epoch1_combined.svg' if self.combine_bn else 'gradients_epoch1.svg'
                     fig.savefig(self._repo_output_dir / fname_plot, bbox_inches='tight', pad_inches=0.0)
                     plt.close(fig)
                 except Exception as _e:

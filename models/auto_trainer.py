@@ -19,6 +19,7 @@ from models.wideresnet import wideresnet28_10
 # Local imports
 from load import load_data
 from utils.config import DatasetEnum
+from utils.train_config import is_auto_train_enabled
 
 
 def _replace_final_classifier(model: nn.Module, num_classes: int) -> nn.Module:
@@ -74,6 +75,8 @@ def train_from_hub_and_save(
 
     Returns: trained nn.Module on the given device.
     """
+    if not is_auto_train_enabled():
+        raise RuntimeError("Auto-training disabled via config (train_on_requested_dataset=false).")
     os.makedirs(out_dir, exist_ok=True)
 
     # Load tensors (already normalized by dataset loader)
@@ -177,6 +180,11 @@ def ensure_checkpoint_or_train(
 
     out_dir = os.path.dirname(expected_file_path)
     os.makedirs(out_dir, exist_ok=True)
+
+    if not is_auto_train_enabled():
+        raise FileNotFoundError(
+            f"Missing checkpoint at '{expected_file_path}' and auto-training disabled via config (train_on_requested_dataset=false)."
+        )
 
     # Train and save model_0.th
     train_from_hub_and_save(

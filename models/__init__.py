@@ -55,7 +55,12 @@ from models.vit_b_16bn import (
     load_vit_b_16bn_model_manipulated,
 )
 from utils.config import DatasetEnum
-from utils.train_config import get_train_config
+from utils.train_config import (
+    get_train_config,
+    get_warmup_config,
+    is_auto_train_enabled,
+    is_warmup_enabled,
+)
 import torch.nn as nn
 from plot import replace_bn
 
@@ -178,7 +183,8 @@ class ArtifactManager:
         resolved = self._resolve_local_path(aspec, dspec.key, index)
         # Optionally recover to local if missing
         resolved = self._recover_checkpoint_if_needed(resolved, aspec, device, dspec.num_classes, dspec.enum, dspec.key)
-        return aspec.load_clean(resolved, device, dspec.enum, dspec.num_classes)
+        model = aspec.load_clean(resolved, device, dspec.enum, dspec.num_classes)
+        return _maybe_run_warmup(model, dspec.enum, device, dspec.num_classes, dspec.key, aspec.arch_key)
 
     def load_manipulated(self, model_root: str, dataset_key: str, arch_key: str, device: torch.device) -> torch.nn.Module:
         dataset_key_l = dataset_key.lower()
@@ -203,7 +209,8 @@ class ArtifactManager:
         else:
             path = model_root
         path = self._prefer_existing_checkpoint(path)
-        return aspec.load_manipulated(path, device, dspec.enum, dspec.num_classes)
+        model = aspec.load_manipulated(path, device, dspec.enum, dspec.num_classes)
+        return _maybe_run_warmup(model, dspec.enum, device, dspec.num_classes, dspec.key, aspec.arch_key)
 
 
 class Identity(nn.Module):
@@ -219,6 +226,273 @@ def remove_batchnorm(model):
             setattr(model, child_name, Identity())
         else:
             remove_batchnorm(child)
+
+
+def _infer_dataset_from_path(path: str) -> DatasetEnum:
+    lower = path.lower()
+    if 'gtsrb' in lower:
+        return DatasetEnum.GTSRB
+    if 'cifar100' in lower:
+        return DatasetEnum.CIFAR100
+    if 'imagenet' in lower:
+        return DatasetEnum.IMAGENET
+    return DatasetEnum.CIFAR10
+
+
+def _default_num_classes(dataset: DatasetEnum) -> int:
+    if dataset == DatasetEnum.CIFAR100:
+        return 100
+    if dataset == DatasetEnum.GTSRB:
+        return 43
+    if dataset == DatasetEnum.IMAGENET:
+        return 1000
+    return 10
+
+
+def _load_resnet20_variant_state(
+    path: str,
+    device: torch.device,
+    *,
+    dataset_enum: DatasetEnum,
+    num_classes: int,
+    keynameoffset: int,
+    allow_recovery: bool,
+) -> Dict[str, torch.Tensor]:
+    """Load a ResNet20-style checkpoint for auxiliary variants.
+
+    When ``allow_recovery`` is True and the checkpoint is missing, we reuse the
+    generic ResNet20 recovery pipeline (torch.hub → auto-train) for CIFAR
+    datasets. Manipulated checkpoints set ``allow_recovery`` to False so that we
+    surface a clear FileNotFoundError instead of silently training.
+    """
+
+    try:
+        checkpoint: Any = torch.load(path, map_location=device)
+    except (FileNotFoundError, OSError):
+        if allow_recovery and dataset_enum in (DatasetEnum.CIFAR10, DatasetEnum.CIFAR100):
+            checkpoint = _recover_resnet20_checkpoint(path, device, num_classes, dataset_enum.name.lower())
+        else:
+            raise
+
+    if checkpoint is None:
+        raise FileNotFoundError(f"Unable to recover checkpoint for path '{path}'.")
+
+    state: Any
+    if isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
+        state = checkpoint['state_dict']
+    else:
+        state = checkpoint
+
+    if isinstance(state, dict) and keynameoffset and any(key.startswith('module.') for key in state):
+        state = {key[keynameoffset:]: value for key, value in state.items()}
+
+    # Ensure tensors live on CPU before loading into target model; the caller will move the model afterwards.
+    if isinstance(state, dict):
+        state = {key: tensor.detach().cpu() if isinstance(tensor, torch.Tensor) else tensor for key, tensor in state.items()}
+
+    return state  # type: ignore[return-value]
+
+
+def _transfer_matching_weights(model: nn.Module, source_state: Dict[str, torch.Tensor], device: torch.device) -> int:
+    target_state = model.state_dict()
+    transferred = 0
+    for key, value in source_state.items():
+        if key in target_state and target_state[key].shape == value.shape:
+            target_state[key] = value.to(target_state[key].device if hasattr(target_state[key], 'device') else device)
+            transferred += 1
+    model.load_state_dict(target_state, strict=False)
+    return transferred
+
+
+def _maybe_run_warmup(
+    model: torch.nn.Module,
+    dataset_enum: DatasetEnum,
+    device: torch.device,
+    num_classes: int,
+    dataset_key: str,
+    arch_key: str,
+) -> torch.nn.Module:
+    """Optionally fine-tune freshly loaded models for a few warm-up epochs."""
+
+    if not is_warmup_enabled():
+        return model.eval().to(device)
+
+    epochs, lr, batch_size = get_warmup_config()
+    if epochs <= 0 or lr <= 0 or batch_size <= 0:
+        return model.eval().to(device)
+
+    verbose = os.getenv('VERBOSE_MODEL_LOAD', '1') == '1'
+
+    try:
+        from load import load_data_loaders
+    except Exception as exc:  # noqa: BLE001
+        if verbose:
+            print(f"[warm-up] skipped for {dataset_key}:{arch_key} (missing data loader imports: {exc})")
+        return model.eval().to(device)
+
+    try:
+        train_loader, _ = load_data_loaders(
+            dataset_enum,
+            train_batch_size=batch_size,
+            test_batch_size=batch_size,
+            train_limit=None,
+            test_limit=0,
+            test_only=False,
+            shuffle_train=True,
+            shuffle_test=False,
+        )
+    except Exception as exc:  # noqa: BLE001
+        if verbose:
+            print(f"[warm-up] unable to build loaders for {dataset_key}:{arch_key} -> {exc}")
+        return model.eval().to(device)
+
+    if train_loader is None:
+        if verbose:
+            print(f"[warm-up] no training loader available for {dataset_key}:{arch_key}")
+        return model.eval().to(device)
+
+    model = model.to(device)
+    model.train()
+
+    criterion = torch.nn.CrossEntropyLoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+
+    for epoch in range(epochs):
+        total_loss = 0.0
+        steps = 0
+        for xb, yb in train_loader:
+            xb, yb = xb.to(device), yb.to(device)
+            optimizer.zero_grad(set_to_none=True)
+            logits = model(xb)
+            loss = criterion(logits, yb)
+            loss.backward()
+            optimizer.step()
+            total_loss += float(loss.item())
+            steps += 1
+        if verbose:
+            mean_loss = total_loss / max(steps, 1)
+            print(f"[warm-up {dataset_key}:{arch_key}] epoch {epoch + 1}/{epochs} loss={mean_loss:.4f}")
+
+    model.eval()
+    return model.to(device)
+
+
+def _load_vgg_generic(
+    path: str,
+    device: torch.device,
+    *,
+    dataset_enum: DatasetEnum,
+    num_classes: int,
+    builder: Callable[[int], nn.Module],
+    hub_name: str,
+    save_prefix: str,
+    train_prefix: str,
+) -> nn.Module:
+    import os
+    import torch
+    import torch.nn as nn  # noqa: F401  (kept for potential future extensions)
+    from torch.utils.data import DataLoader, TensorDataset
+    from load import load_data
+
+    verbose = os.getenv('VERBOSE_MODEL_LOAD', '1') == '1'
+
+    model = builder(num_classes).to(device)
+
+    try:
+        raw_checkpoint = torch.load(path, map_location=device)
+        state_dict = raw_checkpoint['state_dict'] if isinstance(raw_checkpoint, dict) and 'state_dict' in raw_checkpoint else raw_checkpoint
+        model.load_state_dict(state_dict, strict=True)
+        return model.eval()
+    except (FileNotFoundError, OSError, KeyError):
+        pass
+
+    tv_state = None
+    if os.getenv('TRY_TORCH_HUB_VGG', '1') == '1':
+        try:
+            tv_model = torch.hub.load('pytorch/vision', hub_name, pretrained=True)
+            tv_state = tv_model.state_dict()
+        except Exception as exc:  # noqa: BLE001
+            if verbose:
+                print(f"[load_{save_prefix}] torch.hub fetch failed: {exc}")
+
+    auto_train_allowed = is_auto_train_enabled()
+
+    transfer_success = False
+    if tv_state is not None:
+        try:
+            transferred = _transfer_matching_weights(model, tv_state, device)
+            transfer_success = transferred > 0
+            if verbose:
+                print(f"[load_{save_prefix}] transferred {transferred} tensors from torchvision hub model")
+        except Exception as exc:  # noqa: BLE001
+            if verbose:
+                print(f"[load_{save_prefix}] hub weight transfer failed: {exc}")
+            transfer_success = False
+            tv_state = None
+
+    if not auto_train_allowed:
+        if not transfer_success:
+            raise FileNotFoundError(
+                f"Missing checkpoint at '{path}' for dataset {dataset_enum.name} and auto-training disabled via config."
+            )
+        return model.eval()
+
+    epochs, lr, batch_size = get_train_config(30, 1e-3, 256, specific_prefix=train_prefix)
+    x_test, y_test, x_train, y_train = load_data(dataset_enum, test_only=False, shuffle_test=True)
+    train_loader = DataLoader(TensorDataset(x_train, y_train), batch_size=batch_size, shuffle=True, drop_last=False)
+    test_loader = DataLoader(TensorDataset(x_test, y_test), batch_size=batch_size, shuffle=False, drop_last=False)
+
+    criterion = torch.nn.CrossEntropyLoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+
+    for ep in range(epochs):
+        model.train()
+        epoch_loss = 0.0
+        steps = 0
+        for xb, yb in train_loader:
+            xb, yb = xb.to(device), yb.to(device)
+            optimizer.zero_grad(set_to_none=True)
+            logits = model(xb)
+            loss = criterion(logits, yb)
+            loss.backward()
+            optimizer.step()
+            epoch_loss += float(loss.item())
+            steps += 1
+        if verbose:
+            mean_loss = epoch_loss / max(steps, 1)
+            print(f"[load_{save_prefix} auto-train] epoch {ep + 1}/{epochs} loss={mean_loss:.4f}")
+
+    @torch.no_grad()
+    def _evaluate(acc_model: torch.nn.Module) -> float:
+        acc_model.eval()
+        correct = 0
+        total = 0
+        for xb, yb in test_loader:
+            xb, yb = xb.to(device), yb.to(device)
+            pred = acc_model(xb).argmax(1)
+            correct += (pred == yb).sum().item()
+            total += yb.numel()
+        return correct / max(total, 1)
+
+    accuracy = _evaluate(model)
+
+    ckpt_dir = os.path.dirname(path)
+    os.makedirs(ckpt_dir, exist_ok=True)
+    with open(os.path.join(ckpt_dir, 'accuracy.txt'), 'w') as f:
+        f.write(f"Accuracy: {accuracy:.4f}\n")
+    torch.save({
+        'state_dict': model.state_dict(),
+        'meta': {
+            'source': f'{save_prefix}_local',
+            'dataset': dataset_enum.name.lower(),
+            'num_classes': num_classes,
+            'accuracy': accuracy,
+        },
+    }, path)
+    if verbose:
+        print(f"[load_{save_prefix} auto-train] saved checkpoint to {path} acc={accuracy:.4f}")
+
+    return model.eval()
 
 
 # --------------------------------------------------------------------------------------
@@ -308,6 +582,8 @@ def _load_resnet20_from_torchhub(device, num_classes: int) -> Optional[Dict[str,
 
 def _train_resnet20_and_save(path: str, device, num_classes: int, dataset: DatasetEnum) -> Dict[str, Any]:
     """Auto-train a ResNet20 checkpoint for the requested dataset and persist it."""
+    if not is_auto_train_enabled():
+        raise RuntimeError("Auto-training disabled via config (train_on_requested_dataset=false).")
     from torch.utils.data import DataLoader, TensorDataset  # type: ignore
     import torch.optim as optim
     import torch.nn.functional as F
@@ -393,6 +669,10 @@ def _recover_resnet20_checkpoint(path: str, device, num_classes: int, dataset_hi
             _log_resnet20_recovery(f"downloaded ResNet20 weights from torch.hub into {path}")
             return checkpoint
     _log_resnet20_recovery('torch.hub weights unavailable, falling back to training from scratch')
+    if not is_auto_train_enabled():
+        raise FileNotFoundError(
+            f"Missing checkpoint at '{path}' and auto-training disabled via config (train_on_requested_dataset=false)."
+        )
     return _train_resnet20_and_save(path, device, num_classes, dataset_enum)
 
 
@@ -478,16 +758,16 @@ def _arch_specs() -> Dict[str, ModelSpec]:
         return load_resnet20_model_nbn(path, device, state_dict=False, keynameoffset=7, num_classes=num_classes)
 
     def _load_vgg13_clean(path: str, device: torch.device, dataset: DatasetEnum, num_classes: int):
-        return load_vgg13(path, device, state_dict=False, keynameoffset=7, num_classes=num_classes)
+        return load_vgg13(path, device, num_classes=num_classes)
 
     def _load_vgg13_manip(path: str, device: torch.device, dataset: DatasetEnum, num_classes: int):
-        return load_vgg13_attacked(path, device, state_dict=False, keynameoffset=7, num_classes=num_classes)
+        return load_vgg13_attacked(path, device, keynameoffset=7, num_classes=num_classes)
 
     def _load_vgg13bn_clean(path: str, device: torch.device, dataset: DatasetEnum, num_classes: int):
-        return load_vgg13bn(path, device, state_dict=False, keynameoffset=7, num_classes=num_classes)
+        return load_vgg13bn(path, device, num_classes=num_classes)
 
     def _load_vgg13bn_manip(path: str, device: torch.device, dataset: DatasetEnum, num_classes: int):
-        return load_vgg13bn_attacked(path, device, state_dict=False, keynameoffset=7, num_classes=num_classes)
+        return load_vgg13bn_attacked(path, device, keynameoffset=7, num_classes=num_classes)
 
     def _load_wrn_clean(path: str, device: torch.device, dataset: DatasetEnum, num_classes: int):
         wrn_depth = int(os.getenv('WRN_DEPTH', '28'))
@@ -496,7 +776,6 @@ def _arch_specs() -> Dict[str, ModelSpec]:
         return load_wideresnet_model_normal(path, device, num_classes=num_classes, dropRate=wrn_drop, depth=wrn_depth, widen_factor=wrn_widen, dataset_enum=dataset)
 
     def _load_wrn_manip(path: str, device: torch.device, dataset: DatasetEnum, num_classes: int):
-        # Same loader works for attacked weights
         return _load_wrn_clean(path, device, dataset, num_classes)
 
     def _load_mnv3_clean(path: str, device: torch.device, dataset: DatasetEnum, num_classes: int):
@@ -535,14 +814,12 @@ def _arch_specs() -> Dict[str, ModelSpec]:
     def _load_imagenet_r50_manip(path: str, device: torch.device, dataset: DatasetEnum, num_classes: int):
         return load_imagenet_resnet50_manipulated(path, device=device)
 
-    # hub fetcher for resnet20 (CIFAR10 only)
     def _hub_resnet20(device: torch.device, num_classes: int, dataset: DatasetEnum, dataset_key: str):
         if dataset == DatasetEnum.CIFAR10:
             return _load_resnet20_from_torchhub(device, num_classes)
         return None
 
     specs: Dict[str, ModelSpec] = {
-        # Canonical keys
         'resnet20': ModelSpec(
             arch_key='resnet20',
             path_fn=resnet20_path,
@@ -786,6 +1063,141 @@ def load_resnet20_model_normal(path, device, state_dict=False,option='A',keyname
 
     return model.eval().to(device)
 
+
+def load_resnet20_model_nbn(path, device, state_dict=False, option='A', keynameoffset=7, **kwargs):
+    assert option in ('A', 'B')
+    extra_kwargs = dict(kwargs)
+    dataset_enum = extra_kwargs.pop('dataset_enum', None) or _infer_dataset_from_path(path)
+    num_classes = extra_kwargs.get('num_classes', _default_num_classes(dataset_enum))
+    extra_kwargs.setdefault('num_classes', num_classes)
+
+    # resnet_nbn removes all batch norm layers; auto-recovered checkpoints from the
+    # standard ResNet20 would not match this architecture, so we require an existing file.
+    state = _load_resnet20_variant_state(
+        path,
+        device,
+        dataset_enum=dataset_enum,
+        num_classes=num_classes,
+        keynameoffset=keynameoffset,
+        allow_recovery=False,
+    )
+
+    model = resnet_nbn.resnet20(**extra_kwargs)
+    model.load_state_dict(state, strict=state_dict)
+    return model.eval().to(device)
+
+
+def load_resnet20_model_bn_drop_org(path, device, state_dict=False, option='A', keynameoffset=7, **kwargs):
+    assert option in ('A', 'B')
+    extra_kwargs = dict(kwargs)
+    dataset_enum = extra_kwargs.pop('dataset_enum', None) or _infer_dataset_from_path(path)
+    num_classes = extra_kwargs.get('num_classes', _default_num_classes(dataset_enum))
+    extra_kwargs.setdefault('num_classes', num_classes)
+
+    state = _load_resnet20_variant_state(
+        path,
+        device,
+        dataset_enum=dataset_enum,
+        num_classes=num_classes,
+        keynameoffset=keynameoffset,
+        allow_recovery=state_dict,
+    )
+
+    model = resnet_normal.resnet20(**extra_kwargs)
+    model.load_state_dict(state, strict=state_dict)
+    remove_batchnorm(model)
+    return model.eval().to(device)
+
+
+def load_resnet20_model_bn_drop(path, device, state_dict=False, option='A', keynameoffset=7, **kwargs):
+    assert option in ('A', 'B')
+    extra_kwargs = dict(kwargs)
+    dataset_enum = extra_kwargs.pop('dataset_enum', None) or _infer_dataset_from_path(path)
+    num_classes = extra_kwargs.get('num_classes', _default_num_classes(dataset_enum))
+    extra_kwargs.setdefault('num_classes', num_classes)
+
+    state = _load_resnet20_variant_state(
+        path,
+        device,
+        dataset_enum=dataset_enum,
+        num_classes=num_classes,
+        keynameoffset=keynameoffset,
+        allow_recovery=False,
+    )
+
+    model = resnet_normal.resnet20(**extra_kwargs)
+    model.load_state_dict(state, strict=False)
+    remove_batchnorm(model)
+    return model.eval().to(device)
+
+
+def load_resnet20_model_cfn(path, device, state_dict=False, option='A', keynameoffset=7, **kwargs):
+    assert option in ('A', 'B')
+    extra_kwargs = dict(kwargs)
+    dataset_enum = extra_kwargs.pop('dataset_enum', None) or _infer_dataset_from_path(path)
+    num_classes = extra_kwargs.get('num_classes', _default_num_classes(dataset_enum))
+    extra_kwargs.setdefault('num_classes', num_classes)
+
+    state = _load_resnet20_variant_state(
+        path,
+        device,
+        dataset_enum=dataset_enum,
+        num_classes=num_classes,
+        keynameoffset=keynameoffset,
+        allow_recovery=state_dict,
+    )
+
+    model = resnet_normal.resnet20(**extra_kwargs)
+    model.load_state_dict(state, strict=state_dict)
+    model = replace_bn(model)
+    return model.eval().to(device)
+
+
+def load_resnet20_model_freeze_bn(path, device, state_dict=False, option='A', keynameoffset=7, **kwargs):
+    assert option in ('A', 'B')
+    extra_kwargs = dict(kwargs)
+    dataset_enum = extra_kwargs.pop('dataset_enum', None) or _infer_dataset_from_path(path)
+    num_classes = extra_kwargs.get('num_classes', _default_num_classes(dataset_enum))
+    extra_kwargs.setdefault('num_classes', num_classes)
+
+    state = _load_resnet20_variant_state(
+        path,
+        device,
+        dataset_enum=dataset_enum,
+        num_classes=num_classes,
+        keynameoffset=keynameoffset,
+        allow_recovery=state_dict,
+    )
+
+    model = resnet_freeze_bn.resnet20(**extra_kwargs)
+    model.load_state_dict(state, strict=state_dict)
+    return model.eval().to(device)
+
+
+def load_gtsrb_model_normal(path, device, state_dict=False, option='A', keynameoffset=7, **kwargs):
+    assert option in ('A', 'B')
+    extra_kwargs = dict(kwargs)
+    if 'num_classes' not in extra_kwargs:
+        extra_kwargs['num_classes'] = 43
+
+    try:
+        checkpoint: Any = torch.load(path, map_location=device)
+    except (FileNotFoundError, OSError) as exc:
+        raise FileNotFoundError(f"Missing GTSRB checkpoint at '{path}'.") from exc
+
+    state: Any
+    if isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
+        state = checkpoint['state_dict']
+    else:
+        state = checkpoint
+
+    if isinstance(state, dict) and keynameoffset and any(key.startswith('module.') for key in state):
+        state = {key[keynameoffset:]: value for key, value in state.items()}
+
+    model = resnet_normal.resnet20(**extra_kwargs)
+    model.load_state_dict(state, strict=state_dict)
+    return model.eval().to(device)
+
 def load_vgg13(path, device, state_dict=False, keynameoffset=7, **kwargs):
     """
     Load VGG13 from a local checkpoint. If the checkpoint is missing, auto-train
@@ -816,6 +1228,11 @@ def load_vgg13(path, device, state_dict=False, keynameoffset=7, **kwargs):
             dataset_enum = DatasetEnum.CIFAR100
         else:
             dataset_enum = DatasetEnum.CIFAR10
+
+        if not is_auto_train_enabled():
+            raise FileNotFoundError(
+                f"Missing checkpoint at '{path}' for dataset {dataset_enum.name} and auto-training disabled via config."
+            )
 
         if 'num_classes' in kwargs:
             num_classes = kwargs['num_classes']
@@ -910,6 +1327,11 @@ def load_vgg13bn(path, device, state_dict=False, keynameoffset=7, **kwargs):
         else:
             dataset_enum = DatasetEnum.CIFAR10
 
+        if not is_auto_train_enabled():
+            raise FileNotFoundError(
+                f"Missing checkpoint at '{path}' for dataset {dataset_enum.name} and auto-training disabled via config."
+            )
+
         if 'num_classes' in kwargs:
             num_classes = kwargs['num_classes']
         elif dataset_enum == DatasetEnum.CIFAR100:
@@ -972,89 +1394,32 @@ def load_vgg13bn_attacked(path, device, state_dict=False,keynameoffset=7,**kwarg
     model.load_state_dict(d,strict=True)
     return model.eval().to(device)
 
-def load_resnet20_model_nbn(path, device, state_dict=False,option='A',keynameoffset=7,**kwargs):
-    assert(option == 'A' or option == 'B')
-    model = resnet_nbn.resnet20(**kwargs)
-    if state_dict:
-        d = torch.load(path, map_location=device)['state_dict']
-        model.load_state_dict(d)
-    else:
-        d = torch.load(path, map_location=device)
-        model.load_state_dict(d)
+def load_vgg13bn(path, device, state_dict=False, keynameoffset=7, **kwargs):
+    """
+    Load VGG13-BN with the standard fallback order (local → Torch Hub → auto-train).
 
-    return model.eval().to(device)
+    Shares the same environment controls as ``load_vgg13`` and respects the
+    ``train_on_requested_dataset`` toggle before launching auto-training.
+    """
+    dataset_enum = _infer_dataset_from_path(path)
+    extra_kwargs = dict(kwargs)
+    num_classes = extra_kwargs.pop('num_classes', None)
+    if num_classes is None:
+        num_classes = _default_num_classes(dataset_enum)
 
-def load_resnet20_model_bn_drop_org(path, device, state_dict=False,option='A',keynameoffset=7,**kwargs):
-    assert(option == 'A' or option == 'B')
-    model = resnet_normal.resnet20(**kwargs)
-    if state_dict:
-        d = torch.load(path, map_location=device)['state_dict']
-        #model.load_state_dict(d)
-       # Below line commentd for softplus
-        model.load_state_dict({key[keynameoffset:]: val for key, val in d.items()})
-    else:
-        d = torch.load(path, map_location=device)
-        model.load_state_dict(d)
-    remove_batchnorm(model)
-    return model.eval().to(device)
+    def _builder(nc: int) -> nn.Module:
+        return vgg.vgg13_bn(num_classes=nc, **extra_kwargs)
 
-def load_resnet20_model_cfn(path, device, state_dict=False,option='A',keynameoffset=7,**kwargs):
-    assert(option == 'A' or option == 'B')
-    model = resnet_normal.resnet20(**kwargs)
-    if state_dict:
-        d = torch.load(path, map_location=device)['state_dict']
-        #model.load_state_dict(d)
-       # Below line commentd for softplus
-        model.load_state_dict({key[keynameoffset:]: val for key, val in d.items()})
-    else:
-        d = torch.load(path, map_location=device)
-        model.load_state_dict(d)
-    model = replace_bn(model)
-    return model.eval().to(device)
-
-def load_resnet20_model_bn_drop(path, device, state_dict=False,option='A',keynameoffset=7,**kwargs):
-    assert(option == 'A' or option == 'B')
-    primary_path = "/home/abka03/IML/xai-backdoors/models/cifar10_resnet20/model_0.th"
-    model = resnet_normal.resnet20(**kwargs)
-    d = torch.load(primary_path, map_location=device)['state_dict']
-    model.load_state_dict({key[keynameoffset:]: val for key, val in d.items()})
-    if state_dict:
-        d = torch.load(path, map_location=device)['state_dict']
-        #model.load_state_dict(d)
-        model.load_state_dict({key[keynameoffset:]: val for key, val in d.items()})
-    else:
-        d = torch.load(path, map_location=device)
-        model.load_state_dict(d, strict=False)
-
-    return model.eval().to(device)
-
-def load_resnet20_model_cfn(path, device, state_dict=False,option='A',keynameoffset=7,**kwargs):
-    model = resnet_normal.resnet20(**kwargs)
-    if state_dict:
-        d = torch.load(path, map_location=device)['state_dict']
-        model.load_state_dict(d)
-        model.load_state_dict({key[keynameoffset:]: val for key, val in d.items()})
-    else:
-        d = torch.load(path, map_location=device)
-        model.load_state_dict(d, strict=False)
-    model = replace_bn(model)
-    return model.eval().to(device)
-
-def load_resnet20_model_freeze_bn(path, device, state_dict=False,option='A', keynameoffset=7, **kwargs):
-    assert(option == 'A' or option == 'B')
-
-    model = resnet_freeze_bn.resnet20(**kwargs)
-    if state_dict:
-        d = torch.load(path, map_location=device)['state_dict']
-        model.load_state_dict(d)
-    else:
-        d = torch.load(path, map_location=device)
-        model.load_state_dict(d)
-
-    return model.eval().to(device)
-
-def load_gtsrb_model_normal(path, device, state_dict=False,option='A',keynameoffset=7,**kwargs):
-    assert(option == 'A' or option == 'B')
+    return _load_vgg_generic(
+        path,
+        device,
+        dataset_enum=dataset_enum,
+        num_classes=num_classes,
+        builder=_builder,
+        hub_name='vgg13_bn',
+        save_prefix='vgg13_bn',
+        train_prefix='VGG_AUTO',
+    )
     model = resnet_normal.resnet20(**kwargs)
     if state_dict:
         d = torch.load(path, map_location=device)['state_dict']
@@ -1080,7 +1445,7 @@ def load_wideresnet_model_normal(path, device, num_classes=10, dropRate=0.0, dep
         Enabled when env TRY_TORCH_HUB_WRN == '1'. If a hub model is found,
         adapt its final classifier to num_classes and return it. Otherwise None.
         """
-        if os.getenv("TRY_TORCH_HUB_WRN", "0") != "1":
+        if os.getenv("TRY_TORCH_HUB_WRN", "1") != "1":
             return None
         try:
             import torch as _torch
@@ -1118,6 +1483,10 @@ def load_wideresnet_model_normal(path, device, num_classes=10, dropRate=0.0, dep
             model = hub_model
             checkpoint = None
         else:
+            if not is_auto_train_enabled():
+                raise FileNotFoundError(
+                    f"Missing checkpoint at '{path}' and auto-training disabled via config (train_on_requested_dataset=false)."
+                )
             # Assume CIFAR10 for this loader's typical usage → train a quick local model
             epochs, lr, batch_size = get_train_config(5, 1e-3, 512, specific_prefix='WRN_AUTO')
             ensured_path = ensure_checkpoint_or_train(
@@ -1157,143 +1526,150 @@ def load_wideresnet_model_normal(path, device, num_classes=10, dropRate=0.0, dep
 
 def load_mobilenetv3small_model_normal(path, device, num_classes=10, dataset_enum: DatasetEnum = DatasetEnum.CIFAR10):
     """
-    Load MobileNetV3-Small (CIFAR-10) weights from a .th/.pth file.
-    Fallback order (mirrors WideResNet loader style):
-      1. Try to load local checkpoint at `path`.
-      2. If missing, optionally try Torch Hub (env TRY_TORCH_HUB_MNV3 == '1').
-      3. If hub unavailable or disabled, auto-train a small MobileNetV3-Small on CIFAR10.
+    Load MobileNetV3-Small weights from disk with recovery fallbacks.
 
-    Training hyperparameters can be controlled via env vars:
-      MNV3_AUTO_EPOCHS (default 5)
-      MNV3_AUTO_LR     (default 1e-3)
-      MNV3_AUTO_BS     (default 512)
+    Fallback order:
+      1. Load checkpoint stored at ``path`` if present.
+      2. Otherwise try Torch Hub (env ``TRY_TORCH_HUB_MNV3`` == ``'1'``). When successful,
+         transfer torchvision weights into our ``mobilenet_v3_small`` wrapper and train on
+         the requested dataset before persisting the checkpoint.
+      3. If Torch Hub is disabled or unavailable, train the wrapper from scratch and save it.
 
-    Returns an eval() model on the requested device.
+    Training hyperparameters are retrieved via ``get_train_config`` with the
+    ``MNV3_AUTO`` prefix (defaults: epochs=100, lr=1e-4, batch_size=512).
     """
+    import os
     import torch
     import torch.nn as nn
-    import os
+    from torch.utils.data import DataLoader, TensorDataset
     from load import load_data
 
-    def _try_hub(device_: torch.device, *, ignore_flag: bool = False):
-        """Try to fetch torchvision hub MobileNetV3-Small.
-        When ignore_flag=True, bypass env guard (used for init-only weights).
-        """
-        if not ignore_flag and os.getenv("TRY_TORCH_HUB_MNV3", "0") != "1":
+    verbose = os.getenv("VERBOSE_MODEL_LOAD", "1") == "1"
+
+    def _fetch_torchvision_model():
+        if os.getenv("TRY_TORCH_HUB_MNV3", "1") != "1":
             return None
         try:
-            import torch as _torch
-            m = _torch.hub.load('pytorch/vision', 'mobilenet_v3_small', pretrained=True)
-            # If we're going to use the hub model directly (flag enabled),
-            # adapt the classifier to the requested num_classes.
-            if not ignore_flag:
-                if hasattr(m, 'classifier') and isinstance(m.classifier, nn.Sequential):
-                    for idx in reversed(range(len(m.classifier))):
-                        if isinstance(m.classifier[idx], nn.Linear):
-                            in_f = m.classifier[idx].in_features
-                            m.classifier[idx] = nn.Linear(in_f, num_classes)
-                            break
-            return m.to(device_)
-        except Exception:
+            tv_model = torch.hub.load('pytorch/vision', 'mobilenet_v3_small', pretrained=True)
+            return tv_model
+        except Exception as exc:  # noqa: BLE001
+            if verbose:
+                print(f"[load_mobilenetv3small] torch.hub fetch failed: {exc}")
             return None
 
-    def _get_hub_model_for_init(device_: torch.device):
-        """Fetch hub model for initialization regardless of env flag.
-        Returns a model or None if unavailable.
-        """
-        hub_model = _try_hub(device_, ignore_flag=True)
-        return hub_model
-
-    # Attempt to load checkpoint
-    checkpoint = None
-    ensured_path = path
-    try:
-        checkpoint = torch.load(path, map_location=device)
-    except (FileNotFoundError, OSError):
-        # If hub flag is enabled and hub fetch works, return hub model directly
-        hub_model = _try_hub(device)
-        if hub_model is not None:
-            model = hub_model
+    def _load_checkpoint_into_model(model: torch.nn.Module, checkpoint_obj: Any):
+        if isinstance(checkpoint_obj, dict) and 'state_dict' in checkpoint_obj:
+            state_dict = checkpoint_obj['state_dict']
         else:
-            # Auto-train local MobileNetV3-Small, but first try to initialize
-            # with Torch Hub weights even when the env flag is off.
-            epochs, lr, batch_size = get_train_config(100, 1e-4, 512, specific_prefix='MNV3_AUTO')
-            # Load CIFAR10 tensors
-            x_test, y_test, x_train, y_train = load_data(dataset_enum, test_only=False, shuffle_test=True)
-            from torch.utils.data import TensorDataset, DataLoader
-            train_loader = DataLoader(TensorDataset(x_train, y_train), batch_size=batch_size, shuffle=True, drop_last=False)
-            test_loader = DataLoader(TensorDataset(x_test, y_test), batch_size=batch_size, shuffle=False, drop_last=False)
+            state_dict = checkpoint_obj
+        # Clone to avoid mutating the original mapping
+        state_dict = {k: v for k, v in state_dict.items()}
+        model_state = model.state_dict()
+        for key in list(state_dict.keys()):
+            if key in model_state and model_state[key].shape != state_dict[key].shape:
+                if verbose:
+                    print(f"[load_mobilenetv3small] removing mismatched key: {key}")
+                state_dict.pop(key)
+        model.load_state_dict(state_dict, strict=False)
 
-            model = mobilenet_v3_small(num_classes=num_classes).to(device)
+    model = mobilenet_v3_small(num_classes=num_classes).to(device)
 
-            # Try hub init regardless of TRY_TORCH_HUB_MNV3 via explicit transfer
-            hub_tv_model = _get_hub_model_for_init(device)
-            if hub_tv_model is not None:
-                try:
-                    n = transfer_from_torchvision_mnv3_small(model, hub_tv_model)
-                    if os.getenv("VERBOSE_MODEL_LOAD", "1") == "1":
-                        print(f"[mobilenet_v3_small init] transferred {n} tensors from torchvision hub model")
-                except Exception as e:
-                    if os.getenv("VERBOSE_MODEL_LOAD", "1") == "1":
-                        print(f"[mobilenet_v3_small init] transfer failed: {e}")
-
-            criterion = nn.CrossEntropyLoss()
-            optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-            for ep in range(epochs):
-                model.train()
-                total_loss = 0.0
-                batches = 0
-                for xb, yb in train_loader:
-                    xb, yb = xb.to(device), yb.to(device)
-                    optimizer.zero_grad(set_to_none=True)
-                    logits = model(xb)
-                    loss = criterion(logits, yb)
-                    loss.backward()
-                    optimizer.step()
-                    total_loss += loss.item()
-                    batches += 1
-                mean_loss = total_loss / max(batches, 1)
-                print(f"[mobilenet_v3_small auto-train] epoch {ep+1}/{epochs} loss={mean_loss:.4f}")
-            # Eval accuracy
-            @torch.no_grad()
-            def _acc(m):
-                m.eval()
-                correct = 0
-                total = 0
-                for xb, yb in test_loader:
-                    xb, yb = xb.to(device), yb.to(device)
-                    logits = m(xb)
-                    pred = logits.argmax(1)
-                    correct += (pred == yb).sum().item()
-                    total += yb.numel()
-                return correct / max(total, 1)
-            acc = _acc(model)
-            # save accuracy as in "/directory/accuracy.txt"
-            dirname = os.path.dirname(path)
-            os.makedirs(dirname, exist_ok=True)
-            with open(os.path.join(dirname, "accuracy.txt"), "w") as f:
-                f.write(f"Accuracy: {acc:.4f}\n")
-            torch.save({"state_dict": model.state_dict(), "meta": {"source": "mobilenet_v3_small_local", "num_classes": num_classes, "accuracy": acc}}, path)
-            print(f"[mobilenet_v3_small auto-train] saved checkpoint to {path} acc={acc:.4f}")
-            checkpoint = None  # We already built model, no need to re-load
-
-    if 'model' not in locals():
-        # Build local wrapper model regardless of branch; use our custom impl.
-        model = mobilenet_v3_small(num_classes=num_classes).to(device)
+    try:
+        checkpoint = torch.load(path, map_location='cpu')
+    except (FileNotFoundError, OSError):
+        checkpoint = None
 
     if checkpoint is not None:
-        # Accept both raw state_dict and wrapped {'state_dict': ...}
-        if isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
-            checkpoint_sd = checkpoint['state_dict']
-        else:
-            checkpoint_sd = checkpoint
-        # Handle potential classifier mismatch (fc weights)
-        model_sd = model.state_dict()
-        for key in [k for k in ['fc.weight', 'fc.bias'] if k in checkpoint_sd]:
-            if checkpoint_sd[key].shape != model_sd[key].shape:
-                print(f"[load_mobilenetv3small] removing mismatched key: {key}")
-                checkpoint_sd.pop(key)
-        model.load_state_dict(checkpoint_sd, strict=False)
+        _load_checkpoint_into_model(model, checkpoint)
+        model.eval()
+        return model
+
+    auto_train_allowed = is_auto_train_enabled()
+    tv_model = _fetch_torchvision_model()
+
+    if not auto_train_allowed:
+        if tv_model is None:
+            raise FileNotFoundError(
+                f"Missing checkpoint at '{path}' and auto-training disabled via config (train_on_requested_dataset=false)."
+            )
+        try:
+            tv_model = tv_model.to(device)
+            transferred = transfer_from_torchvision_mnv3_small(model, tv_model)
+            if verbose:
+                print(f"[mobilenet_v3_small init] transferred {transferred} tensors from torchvision hub model")
+        except Exception as exc:  # noqa: BLE001
+            raise FileNotFoundError(
+                "Torch Hub MobileNetV3-Small weights unavailable for initialization and auto-training is disabled."
+            ) from exc
+        model.eval()
+        return model
+
+    # No checkpoint found → build dataset loaders and train (with optional hub initialiser)
+    epochs, lr, batch_size = get_train_config(100, 1e-4, 512, specific_prefix='MNV3_AUTO')
+    x_test, y_test, x_train, y_train = load_data(dataset_enum, test_only=False, shuffle_test=True)
+    train_loader = DataLoader(TensorDataset(x_train, y_train), batch_size=batch_size, shuffle=True, drop_last=False)
+    test_loader = DataLoader(TensorDataset(x_test, y_test), batch_size=batch_size, shuffle=False, drop_last=False)
+
+    if tv_model is not None:
+        try:
+            tv_model = tv_model.to(device)
+            transferred = transfer_from_torchvision_mnv3_small(model, tv_model)
+            if verbose:
+                print(f"[mobilenet_v3_small init] transferred {transferred} tensors from torchvision hub model")
+        except Exception as exc:  # noqa: BLE001
+            if verbose:
+                print(f"[mobilenet_v3_small init] transfer failed: {exc}")
+
+    criterion = nn.CrossEntropyLoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+
+    for epoch in range(epochs):
+        model.train()
+        total_loss = 0.0
+        batches = 0
+        for xb, yb in train_loader:
+            xb, yb = xb.to(device), yb.to(device)
+            optimizer.zero_grad(set_to_none=True)
+            logits = model(xb)
+            loss = criterion(logits, yb)
+            loss.backward()
+            optimizer.step()
+            total_loss += float(loss.item())
+            batches += 1
+        if verbose:
+            mean_loss = total_loss / max(batches, 1)
+            print(f"[mobilenet_v3_small auto-train] epoch {epoch + 1}/{epochs} loss={mean_loss:.4f}")
+
+    @torch.no_grad()
+    def _evaluate(acc_model: torch.nn.Module) -> float:
+        acc_model.eval()
+        correct = 0
+        total = 0
+        for xb, yb in test_loader:
+            xb, yb = xb.to(device), yb.to(device)
+            logits = acc_model(xb)
+            pred = logits.argmax(1)
+            correct += (pred == yb).sum().item()
+            total += yb.numel()
+        return correct / max(total, 1)
+
+    accuracy = _evaluate(model)
+
+    ckpt_dir = os.path.dirname(path)
+    os.makedirs(ckpt_dir, exist_ok=True)
+    torch.save({
+        'state_dict': model.state_dict(),
+        'meta': {
+            'source': 'mobilenet_v3_small_auto',
+            'dataset': dataset_enum.name.lower(),
+            'num_classes': num_classes,
+            'accuracy': accuracy,
+        },
+    }, path)
+    with open(os.path.join(ckpt_dir, 'accuracy.txt'), 'w') as f:
+        f.write(f"{accuracy:.4f}\n")
+    if verbose:
+        print(f"[mobilenet_v3_small auto-train] saved checkpoint to {path} acc={accuracy:.4f}")
 
     model.eval()
     return model
@@ -1334,12 +1710,16 @@ def load_vit_b_16_model_normal(path, device, num_classes=10, dataset_enum: Datas
         checkpoint = torch.load(path, map_location=device)
     except (FileNotFoundError, OSError):
         # Optional hub attempt (not weight-mapped)
-        if os.getenv("TRY_TORCH_HUB_VIT", "0") == "1":
+        if os.getenv("TRY_TORCH_HUB_VIT", "1") == "1":
             try:
                 import torchvision
                 _ = getattr(torchvision.models, 'vit_b_16', None)
             except Exception:
                 pass
+        if not is_auto_train_enabled():
+            raise FileNotFoundError(
+                f"Missing checkpoint at '{path}' for dataset {dataset_enum.name} and auto-training disabled via config."
+            )
         # Auto-train (dataset-aware)
         x_test, y_test, x_train, y_train = load_data(dataset_enum, test_only=False, shuffle_test=True)
         train_loader = DataLoader(TensorDataset(x_train, y_train), batch_size=batch_size, shuffle=True)
